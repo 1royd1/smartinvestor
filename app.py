@@ -90,26 +90,25 @@ if menu == "🏠 홈":
         st.warning("조건에 부합하는 ETF 없음.")
 
     st.markdown("### 📰 투자 뉴스 요약 (GPT)")
-    def fetch_news():
-        url = "https://www.investing.com/rss/news_285.rss"
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        root = ET.fromstring(resp.content)
-        items = root.findall(".//item")
-        news = []
+def fetch_news():
+    try:
+        ...
         for item in items[:5]:
             title = item.find("title").text
             link = item.find("link").text
-            gpt_summary = title
-            if "OPENAI_API_KEY" in st.secrets:
-                from openai import OpenAI
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-                prompt = f"뉴스 제목을 한국어로 간단 요약해줘: {title}"
-                response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}])
-                gpt_summary = response.choices[0].message.content.strip()
-            summary_combined = f"**🧠 GPT 요약:** {gpt_summary}
-[원문 보기]({link})"
+
+            client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+            prompt = f"뉴스 제목을 한국어로 간단 요약해줘: {title}"
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            gpt_summary = response.choices[0].message.content.strip()
+            summary_combined = f"**🧠 GPT 요약:** {gpt_summary}\n[원문 보기]({link})"
             news.append(summary_combined)
-        return news
+    except:
+        news.append("❌ 뉴스 요약 실패")
+    return news
     for n in fetch_news():
         st.markdown(n)
 
