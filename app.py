@@ -102,12 +102,10 @@ if menu == "🏠 홈":
             gpt_summary = title
             if "OPENAI_API_KEY" in st.secrets:
                 openai.api_key = st.secrets["OPENAI_API_KEY"]
-                prompt = f"뉴스 제목을 한국어로 간단 요약해줘:
-{title}"
+                prompt = f"뉴스 제목을 한국어로 간단 요약해줘: {title}"
                 gpt_resp = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}])
                 gpt_summary = gpt_resp.choices[0].message.content.strip()
-            summary_combined = f"**🧠 GPT 요약:** {gpt_summary}
-[원문 보기]({link})"
+            summary_combined = f"**🧠 GPT 요약:** {gpt_summary}\\n[원문 보기]({link})"
             news.append(summary_combined)
         return news
     for n in fetch_news():
