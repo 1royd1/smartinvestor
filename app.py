@@ -1,167 +1,185 @@
-
 import streamlit as st
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 import plotly.graph_objs as go
 import openai
-import datetime
 import ta
 import requests
-import io
-import platform
+import os
+import bcrypt
+import json
+from fpdf import FPDF
+from datetime import datetime
 
-# ------------------------
-# 설정
-# ------------------------
-st.set_page_config(page_title="SmartInvestor 대시보드", layout="wide")
-st.title("📈 SmartInvestor: 종합 투자 대시보드")
+st.set_page_config(page_title="SmartInvestor", layout="wide")
 
-# ------------------------
-# 플랫폼 감지 (모바일 여부)
-# ------------------------
-def is_mobile():
-    ua = st.session_state.get("_user_agent", "").lower()
-    return "mobile" in ua or "android" in ua or "iphone" in ua
+# 사용자 인증 관련 로직
+def load_users():
+    if os.path.exists("users.csv"):
+        return pd.read_csv("users.csv")
+    else:
+        return pd.DataFrame(columns=["user_id", "email", "password_hash", "is_admin", "show_heatmap"])
 
-# ------------------------
-# 메뉴
-# ------------------------
-menu = st.sidebar.selectbox("메뉴 선택", [
-    "🏠 종합 대시보드",
-    "📊 개별 종목 분석",
-    "⭐ 추천 종목 스캐너",
-    "📂 포트폴리오 보기",
-    "🎯 성향 기반 ETF 추천",
-    "📈 수익률 추적 그래프",
-    "🔔 리스크 경고 알림",
-    "🗓️ 리밸런싱 리마인더"
-])
+def save_users(df):
+    df.to_csv("users.csv", index=False)
 
-# ------------------------
-# Investing.com 뉴스 RSS 연동
-# ------------------------
-def fetch_investing_news():
-    try:
-        rss_url = "https://www.investing.com/rss/news_285.rss"
-        response = requests.get(rss_url, headers={"User-Agent": "Mozilla/5.0"})
-        if response.status_code == 200:
+def authenticate(email, password):
+    users = load_users()
+    user = users[users["email"] == email]
+    if not user.empty:
+        stored_hash = user.iloc[0]["password_hash"]
+        if bcrypt.checkpw(password.encode(), stored_hash.encode()):
+            return user.iloc[0]
+    return None
+
+def register_user(email, password, is_admin=False):
+    users = load_users()
+    if email in users["email"].values:
+        return False, "이미 존재하는 이메일입니다."
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    user_id = len(users) + 1
+    new_user = pd.DataFrame([[user_id, email, hashed, is_admin, True]], columns=users.columns)
+    users = pd.concat([users, new_user], ignore_index=True)
+    save_users(users)
+    return True, "회원가입 성공"
+
+def load_portfolio(user_id):
+    path = f"portfolio_{user_id}.csv"
+    if os.path.exists(path):
+        return pd.read_csv(path)
+    return pd.DataFrame(columns=["ticker", "avg_price", "qty"])
+
+def save_portfolio(user_id, df):
+    df.to_csv(f"portfolio_{user_id}.csv", index=False)
+
+# 로그인 UI
+if "user" not in st.session_state:
+    st.title("🔐 SmartInvestor 로그인")
+    mode = st.radio("작업 선택", ["로그인", "회원가입"])
+    email = st.text_input("이메일")
+    password = st.text_input("비밀번호", type="password")
+    if st.button("확인"):
+        if mode == "로그인":
+            user = authenticate(email, password)
+            if user:
+                st.session_state.user = dict(user)
+                st.experimental_rerun()
+            else:
+                st.error("로그인 실패: 이메일 또는 비밀번호가 잘못되었습니다.")
+        else:
+            success, msg = register_user(email, password)
+            if success:
+                st.success(msg)
+            else:
+                st.error(msg)
+    st.stop()
+
+# 로그인 후 진입
+user = st.session_state.user
+st.sidebar.markdown(f"👤 {user['email']}님 환영합니다.")
+menu = st.sidebar.selectbox("메뉴", ["🏠 홈", "📊 분석", "🧾 리포트", "🛡 관리자"] if user["is_admin"] else ["🏠 홈", "📊 분석", "🧾 리포트"])
+
+# Finviz 히트맵 + 추천 + 뉴스
+if menu == "🏠 홈":
+    st.title("🏠 대시보드")
+    if user["show_heatmap"] and st.session_state.get("is_mobile") != True:
+        st.markdown("### 🌐 히트맵 (Finviz)")
+        st.markdown('<iframe src="https://finviz.com/map.ashx?t=sec" width="100%" height="600"></iframe>', unsafe_allow_html=True)
+    else:
+        st.markdown("[🌐 히트맵 바로가기](https://finviz.com/map.ashx?t=sec)")
+
+    st.markdown("### 💼 내 포트폴리오")
+    portfolio_df = load_portfolio(user["user_id"])
+    file = st.file_uploader("CSV 업로드", type="csv")
+    if file:
+        uploaded_df = pd.read_csv(file)
+        save_portfolio(user["user_id"], uploaded_df)
+        portfolio_df = uploaded_df
+    if not portfolio_df.empty:
+        st.dataframe(portfolio_df)
+
+    st.markdown("### 🔍 추천 ETF")
+    etfs = ["SPY", "QQQ", "VTI", "ARKK", "TQQQ", "SOXL"]
+    selected = []
+    for ticker in etfs:
+        try:
+            df = yf.download(ticker, period="6mo")
+            rsi = ta.momentum.RSIIndicator(df["Close"]).rsi().iloc[-1]
+            macd = ta.trend.MACD(df["Close"]).macd_diff().iloc[-1]
+            if rsi < 30 and macd > 0:
+                selected.append(ticker)
+        except:
+            pass
+    st.write("추천 종목:", selected)
+
+    st.markdown("### 📰 투자 뉴스 (Investing.com 요약)")
+    def fetch_news():
+        try:
+            url = "https://www.investing.com/rss/news_285.rss"
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
             import xml.etree.ElementTree as ET
-            root = ET.fromstring(response.content)
+            root = ET.fromstring(resp.content)
             items = root.findall(".//item")
             news = []
             for item in items[:5]:
                 title = item.find("title").text
                 link = item.find("link").text
-                # 번역 요약 추가 (OpenAI 필요)
-                summary_prompt = f"다음 뉴스 제목을 한국어로 요약해줘:
-
-{title}"
-                try:
-                    if "OPENAI_API_KEY" in st.secrets:
-                        openai.api_key = st.secrets["OPENAI_API_KEY"]
-                        response = openai.ChatCompletion.create(
-                            model="gpt-3.5-turbo",
-                            messages=[{"role": "user", "content": summary_prompt}]
-                        )
-                        translated = response.choices[0].message.content.strip()
-                    else:
-                        translated = "(GPT API 키 필요) " + title
-                except:
-                    translated = title
-                news.append(f"- [{translated}]({link})")
+                summary = title
+                if "OPENAI_API_KEY" in st.secrets:
+                    openai.api_key = st.secrets["OPENAI_API_KEY"]
+                    prompt = f"뉴스 제목을 한국어로 요약해줘: {title}"
+                    gpt_resp = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}])
+                    summary = gpt_resp.choices[0].message.content.strip()
+                news.append(f"- [{summary}]({link})")
             return news
+        except:
+            return ["❌ 뉴스 로딩 실패"]
+
+    for n in fetch_news():
+        st.markdown(n)
+
+# PDF 생성
+elif menu == "🧾 리포트":
+    st.title("📄 추천 리포트 다운로드")
+    def generate_pdf(tickers):
+        class PDF(FPDF):
+            def header(self):
+                self.set_font("Arial", "B", 14)
+                self.cell(0, 10, "추천 ETF 리포트", ln=True, align="C")
+                self.ln(10)
+            def footer(self):
+                self.set_y(-15)
+                self.set_font("Arial", "I", 8)
+                self.cell(0, 10, datetime.now().strftime("%Y-%m-%d %H:%M"), align="C")
+            def add_body(self, tickers):
+                self.set_font("Arial", "", 12)
+                for i, t in enumerate(tickers, 1):
+                    self.cell(0, 10, f"{i}. {t}", ln=True)
+
+        pdf = PDF()
+        pdf.add_page()
+        pdf.add_body(tickers)
+        path = "/mnt/data/recommendation.pdf"
+        pdf.output(path)
+        return path
+
+    recs = ["TQQQ", "SOXL", "ARKK"]
+    pdf_path = generate_pdf(recs)
+    with open(pdf_path, "rb") as f:
+        st.download_button("📥 PDF 다운로드", f, file_name="ETF_추천.pdf")
+
+# 관리자
+elif menu == "🛡 관리자" and user["is_admin"]:
+    st.title("🛡 사용자 관리")
+    users = load_users()
+    st.dataframe(users)
+    target_email = st.text_input("비밀번호 초기화할 이메일")
+    if st.button("초기화"):
+        idx = users[users["email"] == target_email].index
+        if not idx.empty:
+            new_hash = bcrypt.hashpw("temp1234".encode(), bcrypt.gensalt()).decode()
+            users.at[idx[0], "password_hash"] = new_hash
+            save_users(users)
+            st.success("비밀번호가 'temp1234'로 초기화되었습니다.")
         else:
-            return ["❌ Investing.com RSS 데이터를 가져오지 못했습니다."]
-    except:
-        return ["❌ 뉴스 로딩 중 오류 발생"]
-
-# ------------------------
-# GPT 기반 자산 요약 리포트
-# ------------------------
-def summarize_portfolio_with_gpt(results):
-    try:
-        if not results:
-            return "요약할 포트폴리오 정보가 없습니다."
-        text_lines = [f"{ticker}: 수익률 {rate:.2f}%" for ticker, _, _, rate in results]
-        prompt = f"""
-        다음은 사용자의 주식 수익률 요약입니다. 각 종목별 수익률을 고려해 투자 포트폴리오 상태를 한국어로 분석하고 요약해주세요.
-
-{chr(10).join(text_lines)}
-        """
-        if "OPENAI_API_KEY" in st.secrets:
-            openai.api_key = st.secrets["OPENAI_API_KEY"]
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return response.choices[0].message.content.strip()
-        else:
-            return "GPT API 키가 설정되지 않았습니다."
-    except Exception as e:
-        return f"GPT 분석 실패: {e}"
-
-# ------------------------
-# 종합 대시보드
-# ------------------------
-if menu == "🏠 종합 대시보드":
-    st.subheader("🏠 종합 투자 요약")
-
-    if not is_mobile():
-        st.markdown("### 🌐 시장 섹터 히트맵 (Finviz)")
-        st.markdown("""
-        <iframe src="https://finviz.com/map.ashx?t=sec" width="100%" height="550"></iframe>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("[🌐 Finviz 히트맵 바로가기](https://finviz.com/map.ashx?t=sec)")
-
-    st.markdown("---")
-    st.markdown("### 💼 내 자산 트래커 요약")
-    uploaded = st.file_uploader("보유 종목 CSV (ticker, avg_price, qty)", type="csv", key="home_tracker")
-    if uploaded:
-        df = pd.read_csv(uploaded)
-        results = []
-        for _, row in df.iterrows():
-            try:
-                data = yf.download(row['ticker'], period='5d')
-                price = data['Close'].iloc[-1]
-                pnl = (price - row['avg_price']) * row['qty']
-                rate = ((price - row['avg_price']) / row['avg_price']) * 100
-                results.append((row['ticker'], price, pnl, rate))
-            except:
-                continue
-        if results:
-            st.write("### 📊 현재 보유 종목 수익률:")
-            summary = summarize_portfolio_with_gpt(results)
-            st.markdown("### 🤖 GPT 포트폴리오 요약 분석")
-            st.info(summary)
-            for ticker, price, pnl, rate in results:
-                st.metric(f"{ticker}", f"${price:.2f}", f"{rate:.2f}%")
-
-    st.markdown("---")
-    st.markdown("### 🔍 오늘의 추천 종목 (조건 기반)")
-    etf_list = [
-        "SPY", "QQQ", "VTI", "VOO", "ARKK", "XLE", "XLF", "XLV", "XLK", "XLY", "XLC", "XLI",
-        "XLB", "XLRE", "XLU", "XBI", "SOXL", "TQQQ", "FNGU", "DIA", "IWM", "SCHD", "HDV", "BND"
-    ]
-    selected = []
-    with st.spinner("📡 실시간 스캔 중..."):
-        for sym in etf_list:
-            try:
-                df = yf.download(sym, period="6mo")
-                df['RSI'] = ta.momentum.RSIIndicator(close=df['Close']).rsi()
-                macd_diff = ta.trend.MACD(close=df['Close']).macd_diff()
-                if df['RSI'].iloc[-1] < 30 and macd_diff.iloc[-1] > 0 and macd_diff.iloc[-2] < 0:
-                    selected.append(sym)
-            except:
-                continue
-    if selected:
-        st.success("✅ 조건에 부합하는 추천 ETF:")
-        st.write(", ".join(selected))
-    else:
-        st.warning("조건에 맞는 추천 종목이 없습니다.")
-
-    st.markdown("---")
-    st.markdown("### 📰 글로벌 투자 뉴스 (Investing.com)")
-    news_list = fetch_investing_news()
-    for news in news_list:
-        st.markdown(news)
+            st.warning("해당 이메일 없음")
