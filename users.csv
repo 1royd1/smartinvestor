@@ -1,0 +1,2 @@
+user_id,email,password_hash,is_admin,show_heatmap
+1,kjho9184@gmail.com,$2b$12$AqoEJDLUVlnliMFN.Fy4Ped/uDj6oMvJy7v4cspwKgEGmQetOmu0S,True,True
