@@ -103,8 +103,7 @@ if menu == "🏠 홈":
             if "OPENAI_API_KEY" in st.secrets:
                 from openai import OpenAI
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-                prompt = f"뉴스 제목을 한국어로 간단 요약해줘:
-{title}"
+                prompt = f"뉴스 제목을 한국어로 간단 요약해줘:{title}"
                 response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}])
                 gpt_summary = response.choices[0].message.content.strip()
             summary_combined = f"**🧠 GPT 요약:** {gpt_summary}
