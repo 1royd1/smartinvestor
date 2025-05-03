@@ -26,7 +26,7 @@ def save_users(df):
 def authenticate(email, password):
     users = load_users()
     user = users[users["email"] == email]
-    if not user.empty:
+    if not user.empty:  # 🔧 여기 수정
         stored_hash = user.iloc[0]["password_hash"]
         if bcrypt.checkpw(password.encode(), stored_hash.encode()):
             return user.iloc[0]
