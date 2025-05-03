@@ -1,4 +1,3 @@
-
     # SmartInvestor 통합 버전 app.py
     import streamlit as st
     import pandas as pd
