@@ -5,3 +5,5 @@ plotly
 openai
 ta
 requests
+fpdf
+bcrypt
