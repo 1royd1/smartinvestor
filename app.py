@@ -850,7 +850,7 @@ def main():
             analyze_btn = st.button("📈 분석 시작", use_container_width=True, type="primary")
         
         # 유효성 검사
-        if symbol and not re.match(r'^[A-Z0-9\-\.]+, symbol):
+        if symbol and not re.match(r'^[A-Z0-9\-\.]+$', symbol):
             st.warning("⚠️ 올바른 종목 코드를 입력해주세요 (영문, 숫자, -, . 만 사용)")
         
         if (analyze_btn or selected_from_popular) and symbol:
