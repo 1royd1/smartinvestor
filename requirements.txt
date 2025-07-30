@@ -2,6 +2,6 @@ streamlit
 pandas
 numpy
 requests
-plotly
 fpdf2
 feedparser
+scikit-learn
