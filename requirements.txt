@@ -9,5 +9,4 @@ fpdf>=1.7.2
 feedparser>=6.0.10
 streamlit-option-menu>=0.3.6
 openai>=1.0.0
-googletrans==4.0.0-rc1
 requests>=2.31.0
