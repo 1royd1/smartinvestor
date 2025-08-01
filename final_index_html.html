@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Investor - AI 주식 분석</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .hero-section {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 100px 0;
+            text-align: center;
+        }
+        .search-box {
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        .feature-card {
+            transition: transform 0.3s;
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-graph-up-arrow"></i> Smart Investor
+            </a>
+        </div>
+    </nav>
+
+    <div class="hero-section">
+        <div class="container">
+            <h1 class="display-4 mb-4">AI 기반 주식 분석 플랫폼</h1>
+            <p class="lead mb-5">기술적 지표와 AI 분석으로 더 스마트한 투자 결정을 내리세요</p>
+            
+            <div class="search-box">
+                <form action="/search" method="POST">
+                    <div class="input-group input-group-lg">
+                        <input type="text" class="form-control" name="symbol" 
+                               placeholder="종목 코드 입력 (예: AAPL, TSLA)" required>
+                        <button class="btn btn-warning" type="submit">
+                            <i class="bi bi-search"></i> 분석 시작
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="container my-5">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="row text-center my-5">
+            <div class="col-md-3 mb-4">
+                <div class="card feature-card h-100">
+                    <div class="card-body">
+                        <i class="bi bi-graph-up text-primary" style="font-size: 3rem;"></i>
+                        <h5 class="card-title mt-3">실시간 차트</h5>
+                        <p class="card-text">캔들스틱 차트와 함께 주요 기술적 지표를 한눈에</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-4">
+                <div class="card feature-card h-100">
+                    <div class="card-body">
+                        <i class="bi bi-cpu text-success" style="font-size: 3rem;"></i>
+                        <h5 class="card-title mt-3">AI 분석</h5>
+                        <p class="card-text">AI가 제공하는 심층적인 투자 인사이트</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-4">
+                <div class="card feature-card h-100">
+                    <div class="card-body">
+                        <i class="bi bi-speedometer2 text-warning" style="font-size: 3rem;"></i>
+                        <h5 class="card-title mt-3">기술적 지표</h5>
+                        <p class="card-text">RSI, MACD, CCI, MFI 등 핵심 지표 분석</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-4">
+                <div class="card feature-card h-100">
+                    <div class="card-body">
+                        <i class="bi bi-file-earmark-pdf text-danger" style="font-size: 3rem;"></i>
+                        <h5 class="card-title mt-3">PDF 리포트</h5>
+                        <p class="card-text">분석 결과를 PDF로 다운로드</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center my-5">
+            <h2>인기 종목 빠른 분석</h2>
+            <div class="btn-group mt-3" role="group">
+                <a href="/stock/AAPL" class="btn btn-outline-primary">AAPL</a>
+                <a href="/stock/TSLA" class="btn btn-outline-primary">TSLA</a>
+                <a href="/stock/GOOGL" class="btn btn-outline-primary">GOOGL</a>
+                <a href="/stock/MSFT" class="btn btn-outline-primary">MSFT</a>
+                <a href="/stock/AMZN" class="btn btn-outline-primary">AMZN</a>
+            </div>
+        </div>
+    </div>
+
+    <footer class="bg-dark text-white text-center py-3">
+        <p class="mb-0">&copy; 2024 Smart Investor. All rights reserved.</p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
