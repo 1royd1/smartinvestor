@@ -691,6 +691,23 @@ def perform_ai_analysis(df, symbol, info):
         # 변동성 계산
         volatility = df['Close'].pct_change().std() * np.sqrt(252) * 100  # 연간 변동성
         
+        # 이동평균 계산
+        sma_20 = df['SMA_20'].iloc[-1] if 'SMA_20' in df.columns else 0
+        sma_50 = df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns and not pd.isna(df['SMA_50'].iloc[-1]) else 0
+        
+        # 52주 고저 안전하게 가져오기
+        fifty_two_high = f"${info.get('fiftyTwoWeekHigh', 0):.2f}" if info.get('fiftyTwoWeekHigh') else "N/A"
+        fifty_two_low = f"${info.get('fiftyTwoWeekLow', 0):.2f}" if info.get('fiftyTwoWeekLow') else "N/A"
+        
+        # 지표 값들 안전하게 가져오기
+        rsi_val = f"{latest.get('RSI', 0):.2f}" if 'RSI' in latest and not pd.isna(latest.get('RSI')) else "N/A"
+        macd_val = f"{latest.get('MACD', 0):.2f}" if 'MACD' in latest and not pd.isna(latest.get('MACD')) else "N/A"
+        macd_signal_val = f"{latest.get('MACD_signal', 0):.2f}" if 'MACD_signal' in latest and not pd.isna(latest.get('MACD_signal')) else "N/A"
+        cci_val = f"{latest.get('CCI', 0):.2f}" if 'CCI' in latest and not pd.isna(latest.get('CCI')) else "N/A"
+        mfi_val = f"{latest.get('MFI', 0):.2f}" if 'MFI' in latest and not pd.isna(latest.get('MFI')) else "N/A"
+        stoch_k_val = f"{latest.get('Stoch_K', 0):.2f}" if 'Stoch_K' in latest and not pd.isna(latest.get('Stoch_K')) else "N/A"
+        atr_val = f"{latest.get('ATR', 0):.2f}" if 'ATR' in latest and not pd.isna(latest.get('ATR')) else "N/A"
+        
         prompt = f"""
         다음은 {symbol} ({info.get('longName', symbol)}) 주식의 종합 분석 데이터입니다:
         
@@ -698,8 +715,8 @@ def perform_ai_analysis(df, symbol, info):
         - 섹터: {info.get('sector', 'N/A')}
         - 산업: {info.get('industry', 'N/A')}
         - 시가총액: ${info.get('marketCap', 0):,.0f}
-        - 52주 최고가: ${info.get('fiftyTwoWeekHigh', 'N/A')}
-        - 52주 최저가: ${info.get('fiftyTwoWeekLow', 'N/A')}
+        - 52주 최고가: {fifty_two_high}
+        - 52주 최저가: {fifty_two_low}
         
         [최신 가격 데이터]
         - 현재가: ${latest['Close']:.2f}
@@ -708,17 +725,17 @@ def perform_ai_analysis(df, symbol, info):
         - 연간 변동성: {volatility:.2f}%
         
         [기술적 지표]
-        - RSI: {latest.get('RSI', 'N/A'):.2f}
-        - MACD: {latest.get('MACD', 'N/A'):.2f}
-        - MACD Signal: {latest.get('MACD_signal', 'N/A'):.2f}
-        - CCI: {latest.get('CCI', 'N/A'):.2f}
-        - MFI: {latest.get('MFI', 'N/A'):.2f}
-        - Stochastic %K: {latest.get('Stoch_K', 'N/A'):.2f}
-        - ATR: {latest.get('ATR', 'N/A'):.2f}
+        - RSI: {rsi_val}
+        - MACD: {macd_val}
+        - MACD Signal: {macd_signal_val}
+        - CCI: {cci_val}
+        - MFI: {mfi_val}
+        - Stochastic %K: {stoch_k_val}
+        - ATR: {atr_val}
         
         [이동평균]
-        - 20일: ${df['SMA_20'].iloc[-1]:.2f} if 'SMA_20' in df.columns else 'N/A'}
-        - 50일: ${df['SMA_50'].iloc[-1]:.2f} if 'SMA_50' in df.columns and not pd.isna(df['SMA_50'].iloc[-1]) else 'N/A'}
+        - 20일: ${sma_20:.2f}
+        - 50일: ${sma_50:.2f}
         
         [최근 성과]
         - 5일 수익률: {((latest['Close'] - df['Close'].iloc[-6]) / df['Close'].iloc[-6] * 100):.2f}%
