@@ -210,6 +210,16 @@ def get_stock_data(symbol, period="1mo"):
         st.error(f"데이터 로드 실패: {str(e)}")
         return pd.DataFrame(), {}
 
+@st.cache_data(ttl=600)  # 10분 캐시
+def get_stock_news(symbol):
+    """주식 관련 뉴스 가져오기"""
+    try:
+        ticker = yf.Ticker(symbol)
+        news = ticker.news
+        return news[:5] if news else []  # 최신 5개 뉴스만
+    except:
+        return []
+
 @st.cache_data(ttl=600)
 def get_crypto_metrics(symbol):
     """암호화폐 추가 지표 가져오기"""
@@ -238,17 +248,22 @@ def calculate_indicators(df):
         # RSI
         df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         
-        # MACD - 수정된 버전
+        # MACD - 완전히 수정된 버전
         if len(df) >= 26:  # MACD는 최소 26개 데이터 필요
-            exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-            exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-            df['MACD'] = exp1 - exp2
-            df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-            df['MACD_diff'] = df['MACD'] - df['MACD_signal']
+            # ta 라이브러리 사용
+            macd_indicator = ta.trend.MACD(df['Close'], window_slow=26, window_fast=12, window_sign=9)
+            df['MACD'] = macd_indicator.macd()
+            df['MACD_signal'] = macd_indicator.macd_signal()
+            df['MACD_diff'] = macd_indicator.macd_diff()
+            
+            # NaN 값 처리
+            df['MACD'] = df['MACD'].fillna(method='bfill')
+            df['MACD_signal'] = df['MACD_signal'].fillna(method='bfill')
+            df['MACD_diff'] = df['MACD_diff'].fillna(0)
         else:
-            df['MACD'] = np.nan
-            df['MACD_signal'] = np.nan
-            df['MACD_diff'] = np.nan
+            df['MACD'] = 0
+            df['MACD_signal'] = 0
+            df['MACD_diff'] = 0
         
         # CCI
         df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close']).cci()
@@ -481,7 +496,7 @@ def perform_crypto_analysis(df, symbol, metrics):
     return analysis
 
 def perform_ai_analysis(df, symbol, info, asset_type="주식"):
-    """AI 기반 심층 분석"""
+    """AI 기반 심층 분석 (뉴스 포함)"""
     if not groq_client:
         if asset_type == "암호화폐":
             return perform_crypto_analysis(df, symbol, get_crypto_metrics(symbol))
@@ -490,21 +505,42 @@ def perform_ai_analysis(df, symbol, info, asset_type="주식"):
     try:
         latest = df.iloc[-1]
         
+        # 뉴스 가져오기
+        news = get_stock_news(symbol)
+        news_summary = ""
+        if news:
+            news_summary = "\n[최신 뉴스]\n"
+            for i, article in enumerate(news[:3]):
+                title = article.get('title', '')
+                publisher = article.get('publisher', '')
+                news_summary += f"{i+1}. {title} ({publisher})\n"
+        
         # 변동성 계산
-        volatility = df['Close'].pct_change().std() * np.sqrt(252) * 100  # 연간 변동성
+        volatility = df['Close'].pct_change().std() * np.sqrt(252) * 100
         
         # 추가 계산
-        sma_20 = df['SMA_20'].iloc[-1] if 'SMA_20' in df.columns else 0
+        sma_20 = df['SMA_20'].iloc[-1] if 'SMA_20' in df.columns and not pd.isna(df['SMA_20'].iloc[-1]) else 0
         sma_50 = df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns and not pd.isna(df['SMA_50'].iloc[-1]) else 0
         
+        # MACD 값 안전하게 가져오기
+        macd_val = latest.get('MACD', 0)
+        macd_signal_val = latest.get('MACD_signal', 0)
+        
+        # MACD 상태 확인
+        if pd.isna(macd_val) or macd_val == 0:
+            macd_status = "데이터 부족"
+        else:
+            macd_status = f"MACD: {macd_val:.2f}, Signal: {macd_signal_val:.2f}"
+        
         # 지표 값들 안전하게 가져오기
-        rsi_val = f"{latest.get('RSI', 0):.2f}" if 'RSI' in latest and not pd.isna(latest.get('RSI')) else "N/A"
-        macd_val = f"{latest.get('MACD', 0):.2f}" if 'MACD' in latest and not pd.isna(latest.get('MACD')) else "N/A"
+        rsi_val = latest.get('RSI', 0)
+        cci_val = latest.get('CCI', 0)
+        mfi_val = latest.get('MFI', 0)
         
         asset_type_kr = "암호화폐" if asset_type == "암호화폐" else "ETF" if asset_type == "ETF" else "주식"
         
         prompt = f"""
-        당신은 한국의 전문 투자 분석가입니다. 다음 {asset_type_kr} 데이터를 한국어로 분석해주세요:
+        당신은 한국의 전문 투자 분석가입니다. 다음 {symbol} {asset_type_kr} 데이터를 분석하여 한국어로 상세히 설명해주세요:
         
         [{symbol} 기본 정보]
         - 자산 유형: {asset_type_kr}
@@ -513,20 +549,41 @@ def perform_ai_analysis(df, symbol, info, asset_type="주식"):
         - 변동성: {volatility:.2f}%
         
         [기술적 지표]
-        - RSI: {rsi_val}
-        - MACD: {macd_val}
+        - RSI: {rsi_val:.2f}
+        - {macd_status}
+        - CCI: {cci_val:.2f}
+        - MFI: {mfi_val:.2f}
         - 20일 이동평균: ${sma_20:.2f}
+        - 50일 이동평균: ${sma_50:.2f}
         
-        다음을 한국어로 분석해주세요:
+        {news_summary}
+        
+        다음 항목들을 반드시 한국어로 분석해주세요:
+        
         1. 현재 기술적 상태 평가
-        2. 단기(1주) 및 중기(1개월) 전망
-        3. 주요 매매 신호
+        - RSI, MACD, CCI, MFI 각 지표의 의미 설명
+        - 이동평균선과 현재가의 관계
+        
+        2. 단기 전망 (1주일)
+        - 예상 가격 범위
+        - 주요 지지선과 저항선
+        
+        3. 중기 전망 (1개월)
+        - 추세 전망
+        - 목표가 제시
+        
         4. 리스크 요인
-        5. 구체적인 투자 전략
+        - 기술적 리스크
+        - {"뉴스에서 파악된 리스크" if news else "시장 리스크"}
         
-        {'특히 밈코인의 경우 극심한 변동성과 리스크를 강조해주세요.' if asset_type == '암호화폐' and any(meme in symbol for meme in ['DOGE', 'SHIB', 'PEPE']) else ''}
+        5. 투자 전략
+        - 진입 시점
+        - 손절가와 목표가
+        - 포지션 크기 조절
         
-        전문적이면서도 이해하기 쉽게 설명해주세요.
+        {"특히 밈코인의 경우 극심한 변동성과 투기적 성격을 강조하고, 투자금의 1-2%만 투자하도록 권고하세요." if asset_type == "암호화폐" and any(meme in symbol for meme in ['DOGE', 'SHIB', 'PEPE']) else ""}
+        
+        모든 설명은 한국 투자자가 이해하기 쉽게 한국어로 작성하고, 구체적인 숫자와 함께 실용적인 조언을 제공하세요.
         """
         
         completion = groq_client.chat.completions.create(
@@ -534,7 +591,7 @@ def perform_ai_analysis(df, symbol, info, asset_type="주식"):
             messages=[
                 {
                     "role": "system",
-                    "content": "당신은 한국의 20년 경력 투자 전문가입니다. 주식, 암호화폐, ETF 모든 자산에 정통하며, 기술적 분석과 리스크 관리에 전문성을 가지고 있습니다. 항상 한국어로 답변합니다."
+                    "content": "당신은 한국의 20년 경력 투자 전문가입니다. 기술적 분석, 리스크 관리, 포트폴리오 전략에 정통합니다. 모든 답변은 반드시 한국어로 작성하며, 한국 투자자들이 이해하기 쉽게 설명합니다. 전문 용어는 한국어로 번역하되, 필요시 영어를 병기합니다."
                 },
                 {
                     "role": "user",
@@ -545,7 +602,22 @@ def perform_ai_analysis(df, symbol, info, asset_type="주식"):
             max_tokens=2000
         )
         
-        return f"## 🤖 AI 심층 분석 결과\n\n{completion.choices[0].message.content}"
+        # 뉴스 섹션 추가
+        result = f"## 🤖 AI 심층 분석 결과\n\n"
+        
+        # 뉴스가 있으면 먼저 표시
+        if news:
+            result += "### 📰 최신 뉴스\n"
+            for i, article in enumerate(news[:3]):
+                title = article.get('title', 'N/A')
+                publisher = article.get('publisher', '')
+                link = article.get('link', '')
+                result += f"{i+1}. [{title}]({link}) - {publisher}\n"
+            result += "\n---\n\n"
+        
+        result += completion.choices[0].message.content
+        
+        return result
         
     except Exception as e:
         st.error(f"AI 분석 중 오류 발생: {str(e)}")
@@ -791,9 +863,14 @@ if all_assets:
                     )
                 
                 with col2:
-                    if 'MACD' in df.columns and not pd.isna(df['MACD'].iloc[-1]):
+                    if 'MACD' in df.columns and not df['MACD'].isna().all():
                         macd_val = df['MACD'].iloc[-1]
-                        st.metric("MACD", f"{macd_val:.2f}", delta="신호 확인")
+                        macd_signal = df['MACD_signal'].iloc[-1]
+                        if not pd.isna(macd_val) and not pd.isna(macd_signal):
+                            macd_status = "매수" if macd_val > macd_signal else "매도"
+                            st.metric("MACD", f"{macd_val:.2f}", delta=macd_status)
+                        else:
+                            st.metric("MACD", "계산중", delta="데이터 대기")
                     else:
                         st.metric("MACD", "N/A", delta="데이터 부족")
                 
@@ -831,6 +908,30 @@ if all_assets:
                             f"{atr_val:.2f}",
                             delta=f"{atr_pct:.1f}% 변동성"
                         )
+                
+                # 뉴스 섹션 추가
+                if asset_type != "암호화폐" or not any(x in symbol for x in ['-USD', 'USD']):
+                    st.subheader("📰 최신 뉴스")
+                    news = get_stock_news(symbol)
+                    if news:
+                        for article in news[:3]:
+                            with st.expander(f"📄 {article.get('title', 'N/A')[:60]}..."):
+                                col1, col2 = st.columns([3, 1])
+                                with col1:
+                                    st.write(article.get('title', 'N/A'))
+                                    if article.get('link'):
+                                        st.markdown(f"[📖 전체 기사 읽기]({article.get('link')})")
+                                with col2:
+                                    if article.get('publisher'):
+                                        st.caption(f"📰 {article.get('publisher')}")
+                                    if article.get('providerPublishTime'):
+                                        try:
+                                            pub_time = datetime.fromtimestamp(article.get('providerPublishTime'))
+                                            st.caption(f"🕐 {pub_time.strftime('%m/%d %H:%M')}")
+                                        except:
+                                            pass
+                    else:
+                        st.info("📰 최신 뉴스가 없습니다.")
                 
                 # 분석 버튼
                 st.markdown("---")
