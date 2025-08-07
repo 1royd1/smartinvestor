@@ -10,9 +10,11 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+from reportlab.lib.units import inch
 import os
 import numpy as np
-import requests
+import json
+import hashlib
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
@@ -21,13 +23,13 @@ except ImportError:
 
 # 페이지 설정
 st.set_page_config(
-    page_title="AI 주식/암호화폐 분석 플랫폼",
+    page_title="AI 투자 분석 플랫폼 Pro",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS 스타일 개선
+# CSS 스타일
 st.markdown("""
 <style>
     .main > div {
@@ -46,6 +48,7 @@ st.markdown("""
     .stButton > button:hover {
         background-color: #0052a3;
         transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
     .metric-card {
         background-color: #f0f2f6;
@@ -54,193 +57,157 @@ st.markdown("""
         text-align: center;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    .success-box {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        border-radius: 5px;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
-    .error-box {
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        border-radius: 5px;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
-    .crypto-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 1rem;
+    .login-container {
+        max-width: 400px;
+        margin: auto;
+        padding: 2rem;
+        background-color: #f8f9fa;
         border-radius: 10px;
-        margin: 0.5rem 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Groq 클라이언트 초기화 (새 모델 사용)
+# 사용자 데이터 저장 경로
+USER_DATA_FILE = "user_data.json"
+ADMIN_USERNAME = "admin"
+
+# 비밀번호 해시 함수
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# 사용자 데이터 로드
+def load_user_data():
+    if os.path.exists(USER_DATA_FILE):
+        with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    else:
+        # 초기 관리자 계정 생성
+        return {
+            ADMIN_USERNAME: {
+                "password": hash_password("admin123"),  # 기본 비밀번호
+                "is_admin": True,
+                "created_at": datetime.now().isoformat(),
+                "portfolios": {
+                    "stocks": ["AAPL", "GOOGL", "MSFT"],
+                    "crypto": ["BTC-USD", "ETH-USD"],
+                    "etf": ["SPY", "QQQ"]
+                },
+                "portfolio": {},
+                "watchlist": [],
+                "settings": {}
+            }
+        }
+
+# 사용자 데이터 저장
+def save_user_data(data):
+    with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# 세션 상태 초기화
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'username' not in st.session_state:
+    st.session_state.username = None
+if 'is_admin' not in st.session_state:
+    st.session_state.is_admin = False
+if 'user_data' not in st.session_state:
+    st.session_state.user_data = load_user_data()
+
+# 로그인 함수
+def login(username, password):
+    user_data = st.session_state.user_data
+    if username in user_data and user_data[username]["password"] == hash_password(password):
+        st.session_state.authenticated = True
+        st.session_state.username = username
+        st.session_state.is_admin = user_data[username].get("is_admin", False)
+        
+        # 사용자 포트폴리오 로드
+        user_portfolio = user_data[username].get("portfolios", {})
+        st.session_state.stock_list = user_portfolio.get("stocks", [])
+        st.session_state.crypto_list = user_portfolio.get("crypto", [])
+        st.session_state.etf_list = user_portfolio.get("etf", [])
+        st.session_state.portfolio = user_data[username].get("portfolio", {})
+        st.session_state.watchlist = user_data[username].get("watchlist", [])
+        
+        return True
+    return False
+
+# 로그아웃 함수
+def logout():
+    save_current_user_data()
+    st.session_state.authenticated = False
+    st.session_state.username = None
+    st.session_state.is_admin = False
+    st.session_state.stock_list = []
+    st.session_state.crypto_list = []
+    st.session_state.etf_list = []
+    st.session_state.portfolio = {}
+    st.session_state.watchlist = []
+
+# 현재 사용자 데이터 저장
+def save_current_user_data():
+    if st.session_state.authenticated and st.session_state.username:
+        username = st.session_state.username
+        st.session_state.user_data[username]["portfolios"] = {
+            "stocks": st.session_state.get('stock_list', []),
+            "crypto": st.session_state.get('crypto_list', []),
+            "etf": st.session_state.get('etf_list', [])
+        }
+        st.session_state.user_data[username]["portfolio"] = st.session_state.get('portfolio', {})
+        st.session_state.user_data[username]["watchlist"] = st.session_state.get('watchlist', [])
+        st.session_state.user_data[username]["last_login"] = datetime.now().isoformat()
+        save_user_data(st.session_state.user_data)
+
+# Groq 클라이언트 초기화
 groq_client = None
 if GROQ_AVAILABLE and st.secrets.get("GROQ_API_KEY"):
     groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 # 세션 상태 초기화
 if 'stock_list' not in st.session_state:
-    st.session_state.stock_list = ['AAPL', 'GOOGL', 'MSFT']
+    st.session_state.stock_list = []
 if 'crypto_list' not in st.session_state:
-    st.session_state.crypto_list = ['BTC-USD', 'ETH-USD']
+    st.session_state.crypto_list = []
 if 'etf_list' not in st.session_state:
-    st.session_state.etf_list = ['SPY', 'QQQ']
+    st.session_state.etf_list = []
 if 'analysis_results' not in st.session_state:
     st.session_state.analysis_results = {}
-if 'price_predictions' not in st.session_state:
-    st.session_state.price_predictions = {}
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = {}
+if 'watchlist' not in st.session_state:
+    st.session_state.watchlist = []
 
-# 헤더
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    st.title("🤖 AI 기반 주식/암호화폐 분석")
-    st.markdown("### 스마트한 투자 결정을 위한 종합 분석 플랫폼")
-
-# 추천 밈코인 및 트렌딩 코인
+# 추천 자산
 TRENDING_CRYPTOS = {
-    "인기 밈코인": ["DOGE-USD", "SHIB-USD", "PEPE-USD", "FLOKI-USD", "BONK-USD"],
-    "AI 관련 코인": ["FET-USD", "AGIX-USD", "OCEAN-USD", "RNDR-USD"],
-    "Layer 2": ["MATIC-USD", "ARB-USD", "OP-USD"],
-    "DeFi": ["UNI-USD", "AAVE-USD", "SUSHI-USD"],
-    "주요 코인": ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "ADA-USD"]
+    "🔥 인기 밈코인": ["DOGE-USD", "SHIB-USD", "PEPE-USD", "FLOKI-USD", "BONK-USD"],
+    "🤖 AI 관련": ["FET-USD", "AGIX-USD", "OCEAN-USD", "RNDR-USD"],
+    "⚡ Layer 2": ["MATIC-USD", "ARB-USD", "OP-USD"],
+    "💰 DeFi": ["UNI-USD", "AAVE-USD", "SUSHI-USD", "COMP-USD"],
+    "🏆 주요 코인": ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "ADA-USD"]
 }
 
-# 사이드바
-with st.sidebar:
-    st.header("📊 포트폴리오 관리")
-    
-    # 자산 유형 선택
-    asset_type = st.selectbox("자산 유형", ["주식", "암호화폐", "ETF"])
-    
-    # 자산 추가
-    with st.form(f"add_{asset_type}_form"):
-        if asset_type == "주식":
-            new_asset = st.text_input("주식 심볼", placeholder="예: AAPL")
-        elif asset_type == "암호화폐":
-            st.caption("추천 밈코인: DOGE, SHIB, PEPE")
-            new_asset = st.text_input("암호화폐 심볼", placeholder="예: BTC-USD")
-        else:  # ETF
-            new_asset = st.text_input("ETF 심볼", placeholder="예: SPY")
-            
-        add_button = st.form_submit_button("➕ 추가")
-        
-        if add_button and new_asset:
-            symbol = new_asset.upper()
-            if asset_type == "암호화폐" and not symbol.endswith("-USD"):
-                symbol += "-USD"
-                
-            # 해당 리스트에 추가
-            target_list = (st.session_state.stock_list if asset_type == "주식" 
-                          else st.session_state.crypto_list if asset_type == "암호화폐"
-                          else st.session_state.etf_list)
-            
-            if symbol not in target_list:
-                try:
-                    test_df = yf.Ticker(symbol).history(period="1d")
-                    if not test_df.empty:
-                        target_list.append(symbol)
-                        st.success(f"✅ {symbol} 추가됨!")
-                    else:
-                        st.error(f"❌ {symbol}를 찾을 수 없습니다.")
-                except:
-                    st.error(f"❌ {symbol}는 유효하지 않은 심볼입니다.")
-            else:
-                st.warning("⚠️ 이미 목록에 있습니다.")
-    
-    # 트렌딩 암호화폐 추천
-    if asset_type == "암호화폐":
-        st.markdown("---")
-        st.subheader("🔥 트렌딩 암호화폐")
-        for category, cryptos in TRENDING_CRYPTOS.items():
-            with st.expander(category):
-                for crypto in cryptos:
-                    if st.button(f"+ {crypto}", key=f"add_{crypto}"):
-                        if crypto not in st.session_state.crypto_list:
-                            st.session_state.crypto_list.append(crypto)
-                            st.success(f"✅ {crypto} 추가됨!")
-    
-    st.markdown("---")
-    
-    # 자산 삭제
-    all_assets = st.session_state.stock_list + st.session_state.crypto_list + st.session_state.etf_list
-    if all_assets:
-        st.subheader("자산 삭제")
-        remove_asset = st.selectbox("삭제할 자산 선택", all_assets)
-        if st.button("🗑️ 삭제"):
-            # 해당 리스트에서 삭제
-            if remove_asset in st.session_state.stock_list:
-                st.session_state.stock_list.remove(remove_asset)
-            elif remove_asset in st.session_state.crypto_list:
-                st.session_state.crypto_list.remove(remove_asset)
-            elif remove_asset in st.session_state.etf_list:
-                st.session_state.etf_list.remove(remove_asset)
-                
-            if remove_asset in st.session_state.analysis_results:
-                del st.session_state.analysis_results[remove_asset]
-            st.success(f"✅ {remove_asset} 삭제됨!")
-            st.rerun()
-    
-    st.markdown("---")
-    
-    # API 상태
-    st.subheader("🔧 시스템 상태")
-    if groq_client:
-        st.success("✅ AI 분석 활성화")
-    else:
-        st.warning("⚠️ AI 분석 비활성화")
-        st.caption("Groq API 키를 설정하면 AI 분석 기능을 사용할 수 있습니다.")
-
 # 함수들
-@st.cache_data(ttl=300)  # 5분 캐시
+@st.cache_data(ttl=300)
 def get_stock_data(symbol, period="1mo"):
-    """주식/암호화폐 데이터 가져오기"""
     try:
         stock = yf.Ticker(symbol)
         df = stock.history(period=period)
         info = stock.info
         return df, info
-    except Exception as e:
-        st.error(f"데이터 로드 실패: {str(e)}")
+    except:
         return pd.DataFrame(), {}
 
-@st.cache_data(ttl=600)  # 10분 캐시
+@st.cache_data(ttl=600)
 def get_stock_news(symbol):
-    """주식 관련 뉴스 가져오기"""
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news
-        return news[:5] if news else []  # 최신 5개 뉴스만
+        return news[:5] if news else []
     except:
         return []
 
-@st.cache_data(ttl=600)
-def get_crypto_metrics(symbol):
-    """암호화폐 추가 지표 가져오기"""
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        
-        metrics = {
-            "market_cap": info.get('marketCap', 0),
-            "volume_24h": info.get('volume24Hr', 0),
-            "circulating_supply": info.get('circulatingSupply', 0),
-            "total_supply": info.get('totalSupply', 0),
-            "ath": info.get('fiftyTwoWeekHigh', 0),
-            "atl": info.get('fiftyTwoWeekLow', 0),
-        }
-        return metrics
-    except:
-        return {}
-
 def calculate_indicators(df):
-    """기술적 지표 계산 (MACD 수정 포함)"""
     if df.empty or len(df) < 20:
         return df
     
@@ -248,15 +215,13 @@ def calculate_indicators(df):
         # RSI
         df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
         
-        # MACD - 완전히 수정된 버전
-        if len(df) >= 26:  # MACD는 최소 26개 데이터 필요
-            # ta 라이브러리 사용
+        # MACD
+        if len(df) >= 26:
             macd_indicator = ta.trend.MACD(df['Close'], window_slow=26, window_fast=12, window_sign=9)
             df['MACD'] = macd_indicator.macd()
             df['MACD_signal'] = macd_indicator.macd_signal()
             df['MACD_diff'] = macd_indicator.macd_diff()
             
-            # NaN 값 처리
             df['MACD'] = df['MACD'].fillna(method='bfill')
             df['MACD_signal'] = df['MACD_signal'].fillna(method='bfill')
             df['MACD_diff'] = df['MACD_diff'].fillna(0)
@@ -265,10 +230,8 @@ def calculate_indicators(df):
             df['MACD_signal'] = 0
             df['MACD_diff'] = 0
         
-        # CCI
+        # 기타 지표들
         df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close']).cci()
-        
-        # MFI
         df['MFI'] = ta.volume.MFIIndicator(df['High'], df['Low'], df['Close'], df['Volume']).money_flow_index()
         
         # 볼린저 밴드
@@ -282,39 +245,29 @@ def calculate_indicators(df):
         df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50) if len(df) >= 50 else None
         df['SMA_200'] = ta.trend.sma_indicator(df['Close'], window=200) if len(df) >= 200 else None
         
-        # 추가 지표
-        df['EMA_12'] = ta.trend.ema_indicator(df['Close'], window=12)
-        df['EMA_26'] = ta.trend.ema_indicator(df['Close'], window=26)
-        
         # Stochastic
         stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'])
         df['Stoch_K'] = stoch.stoch()
         df['Stoch_D'] = stoch.stoch_signal()
         
-        # ATR (Average True Range)
+        # ATR
         df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
         
-        # 암호화폐 전용 지표
-        if any(crypto in df.index.name for crypto in ['BTC', 'ETH', 'DOGE', 'SHIB'] if df.index.name):
-            # NVT Ratio 근사치 (Price / Volume ratio)
-            df['PVR'] = df['Close'] / (df['Volume'] / 1000000)  # Volume을 백만 단위로
-            
         return df
     except Exception as e:
         st.error(f"지표 계산 오류: {str(e)}")
         return df
 
-def create_enhanced_chart(df, symbol):
-    """향상된 인터랙티브 차트 생성"""
+def create_chart(df, symbol):
     fig = make_subplots(
         rows=6, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.02,
-        subplot_titles=('주가 및 이동평균', '거래량', 'RSI', 'MACD', 'Stochastic', 'MFI'),
+        subplot_titles=('가격', '거래량', 'RSI', 'MACD', 'Stochastic', 'MFI'),
         row_heights=[0.35, 0.1, 0.15, 0.15, 0.15, 0.1]
     )
     
-    # 1. 주가 차트
+    # 캔들스틱
     fig.add_trace(
         go.Candlestick(
             x=df.index,
@@ -322,268 +275,107 @@ def create_enhanced_chart(df, symbol):
             high=df['High'],
             low=df['Low'],
             close=df['Close'],
-            name='주가',
-            showlegend=False
+            name='가격'
         ),
         row=1, col=1
     )
     
-    # 이동평균선
+    # 이동평균
     if 'SMA_20' in df.columns:
         fig.add_trace(
-            go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', 
-                      line=dict(color='orange', width=1)),
-            row=1, col=1
-        )
-    if 'SMA_50' in df.columns and df['SMA_50'].notna().any():
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['SMA_50'], name='SMA 50', 
-                      line=dict(color='blue', width=1)),
+            go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', line=dict(color='orange')),
             row=1, col=1
         )
     
-    # 볼린저 밴드
-    if 'BB_upper' in df.columns:
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['BB_upper'], name='BB Upper', 
-                      line=dict(color='rgba(250, 128, 114, 0.3)', dash='dash'),
-                      showlegend=False),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['BB_lower'], name='BB Lower', 
-                      line=dict(color='rgba(144, 238, 144, 0.3)', dash='dash'),
-                      fill='tonexty', fillcolor='rgba(200, 200, 200, 0.1)',
-                      showlegend=False),
-            row=1, col=1
-        )
-    
-    # 2. 거래량
-    colors = ['red' if df['Close'].iloc[i] < df['Open'].iloc[i] else 'green' 
-              for i in range(len(df))]
+    # 거래량
+    colors = ['red' if df['Close'].iloc[i] < df['Open'].iloc[i] else 'green' for i in range(len(df))]
     fig.add_trace(
-        go.Bar(x=df.index, y=df['Volume'], name='거래량', 
-               marker_color=colors, showlegend=False),
+        go.Bar(x=df.index, y=df['Volume'], name='거래량', marker_color=colors),
         row=2, col=1
     )
     
-    # 3. RSI
+    # RSI
     if 'RSI' in df.columns:
         fig.add_trace(
-            go.Scatter(x=df.index, y=df['RSI'], name='RSI', 
-                      line=dict(color='purple', width=2)),
+            go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='purple')),
             row=3, col=1
         )
-        fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
-        fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
     
-    # 4. MACD
+    # MACD
     if 'MACD' in df.columns and not df['MACD'].isna().all():
         fig.add_trace(
-            go.Scatter(x=df.index, y=df['MACD'], name='MACD', 
-                      line=dict(color='blue', width=2)),
+            go.Scatter(x=df.index, y=df['MACD'], name='MACD', line=dict(color='blue')),
             row=4, col=1
         )
         if 'MACD_signal' in df.columns:
             fig.add_trace(
-                go.Scatter(x=df.index, y=df['MACD_signal'], name='Signal', 
-                          line=dict(color='red', width=2)),
-                row=4, col=1
-            )
-        if 'MACD_diff' in df.columns:
-            fig.add_trace(
-                go.Bar(x=df.index, y=df['MACD_diff'], name='Histogram', 
-                       marker_color='gray', opacity=0.3),
+                go.Scatter(x=df.index, y=df['MACD_signal'], name='Signal', line=dict(color='red')),
                 row=4, col=1
             )
     
-    # 5. Stochastic
+    # Stochastic
     if 'Stoch_K' in df.columns:
         fig.add_trace(
-            go.Scatter(x=df.index, y=df['Stoch_K'], name='%K', 
-                      line=dict(color='blue', width=2)),
+            go.Scatter(x=df.index, y=df['Stoch_K'], name='%K', line=dict(color='blue')),
             row=5, col=1
         )
-        if 'Stoch_D' in df.columns:
-            fig.add_trace(
-                go.Scatter(x=df.index, y=df['Stoch_D'], name='%D', 
-                          line=dict(color='red', width=2)),
-                row=5, col=1
-            )
-        fig.add_hline(y=80, line_dash="dash", line_color="red", opacity=0.5, row=5, col=1)
-        fig.add_hline(y=20, line_dash="dash", line_color="green", opacity=0.5, row=5, col=1)
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['Stoch_D'], name='%D', line=dict(color='red')),
+            row=5, col=1
+        )
     
-    # 6. MFI
+    # MFI
     if 'MFI' in df.columns:
         fig.add_trace(
-            go.Scatter(x=df.index, y=df['MFI'], name='MFI', 
-                      line=dict(color='brown', width=2)),
+            go.Scatter(x=df.index, y=df['MFI'], name='MFI', line=dict(color='brown')),
             row=6, col=1
         )
-        fig.add_hline(y=80, line_dash="dash", line_color="red", opacity=0.5, row=6, col=1)
-        fig.add_hline(y=20, line_dash="dash", line_color="green", opacity=0.5, row=6, col=1)
-    
-    # 레이아웃 설정
-    title = f"{symbol} 종합 기술적 분석 차트"
-    if symbol.endswith('-USD'):
-        title = f"🪙 {title}"
     
     fig.update_layout(
-        title=title,
-        xaxis_title="날짜",
+        title=f"{symbol} 기술적 분석",
         height=1200,
         showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
         hovermode='x unified'
     )
     
-    fig.update_xaxes(rangeslider_visible=False)
-    
     return fig
 
-def perform_crypto_analysis(df, symbol, metrics):
-    """암호화폐 전용 분석"""
-    if df.empty:
-        return "데이터가 부족하여 분석을 수행할 수 없습니다."
-    
-    latest = df.iloc[-1]
-    
-    # 기본 분석
-    analysis = f"""
-## 🪙 {symbol} 암호화폐 분석 결과
-
-### 📊 시장 데이터
-- **현재가**: ${latest['Close']:.4f}
-- **24시간 거래량**: ${latest['Volume']:,.0f}
-- **시가총액**: ${metrics.get('market_cap', 0):,.0f}
-- **52주 최고가**: ${metrics.get('ath', 0):.4f}
-- **52주 최저가**: ${metrics.get('atl', 0):.4f}
-"""
-    
-    # 온체인 유사 지표
-    if len(df) >= 7:
-        week_ago = df['Close'].iloc[-8] if len(df) >= 8 else df['Close'].iloc[0]
-        week_change = ((latest['Close'] - week_ago) / week_ago) * 100
-        
-        # 거래량 분석
-        avg_volume = df['Volume'].tail(30).mean()
-        volume_ratio = latest['Volume'] / avg_volume
-        
-        analysis += f"""
-### 📈 추세 분석
-- **7일 변화율**: {week_change:.2f}%
-- **거래량 비율**: {volume_ratio:.2f}x (30일 평균 대비)
-- **변동성**: {'높음' if df['Close'].pct_change().std() > 0.05 else '보통' if df['Close'].pct_change().std() > 0.02 else '낮음'}
-"""
-    
-    # 밈코인 특별 분석
-    if any(meme in symbol for meme in ['DOGE', 'SHIB', 'PEPE', 'FLOKI', 'BONK']):
-        analysis += """
-### 🚀 밈코인 특별 지표
-- **커뮤니티 강도**: 소셜 미디어 활동 모니터링 필요
-- **고래 움직임**: 대량 거래 주시 필요
-- **리스크**: 매우 높음 - 변동성 극심
-- **투자 전략**: 단기 트레이딩 또는 소액 투자 권장
-"""
-    
-    return analysis
-
 def perform_ai_analysis(df, symbol, info, asset_type="주식"):
-    """AI 기반 심층 분석 (뉴스 포함)"""
     if not groq_client:
-        if asset_type == "암호화폐":
-            return perform_crypto_analysis(df, symbol, get_crypto_metrics(symbol))
         return perform_technical_analysis(df, symbol)
     
     try:
         latest = df.iloc[-1]
-        
-        # 뉴스 가져오기
         news = get_stock_news(symbol)
         news_summary = ""
         if news:
             news_summary = "\n[최신 뉴스]\n"
             for i, article in enumerate(news[:3]):
                 title = article.get('title', '')
-                publisher = article.get('publisher', '')
-                news_summary += f"{i+1}. {title} ({publisher})\n"
+                news_summary += f"{i+1}. {title}\n"
         
-        # 변동성 계산
         volatility = df['Close'].pct_change().std() * np.sqrt(252) * 100
         
-        # 추가 계산
-        sma_20 = df['SMA_20'].iloc[-1] if 'SMA_20' in df.columns and not pd.isna(df['SMA_20'].iloc[-1]) else 0
-        sma_50 = df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns and not pd.isna(df['SMA_50'].iloc[-1]) else 0
-        
-        # MACD 값 안전하게 가져오기
-        macd_val = latest.get('MACD', 0)
-        macd_signal_val = latest.get('MACD_signal', 0)
-        
-        # MACD 상태 확인
-        if pd.isna(macd_val) or macd_val == 0:
-            macd_status = "데이터 부족"
-        else:
-            macd_status = f"MACD: {macd_val:.2f}, Signal: {macd_signal_val:.2f}"
-        
-        # 지표 값들 안전하게 가져오기
-        rsi_val = latest.get('RSI', 0)
-        cci_val = latest.get('CCI', 0)
-        mfi_val = latest.get('MFI', 0)
-        
-        asset_type_kr = "암호화폐" if asset_type == "암호화폐" else "ETF" if asset_type == "ETF" else "주식"
-        
         prompt = f"""
-        당신은 한국의 전문 투자 분석가입니다. 다음 {symbol} {asset_type_kr} 데이터를 분석하여 한국어로 상세히 설명해주세요:
+        당신은 한국의 전문 투자 분석가입니다. {symbol} {asset_type}을 분석해주세요:
         
-        [{symbol} 기본 정보]
-        - 자산 유형: {asset_type_kr}
+        [기본 정보]
         - 현재가: ${latest['Close']:.2f}
-        - 거래량: {latest['Volume']:,.0f}
+        - RSI: {latest.get('RSI', 0):.2f}
+        - MACD: {latest.get('MACD', 0):.2f}
         - 변동성: {volatility:.2f}%
-        
-        [기술적 지표]
-        - RSI: {rsi_val:.2f}
-        - {macd_status}
-        - CCI: {cci_val:.2f}
-        - MFI: {mfi_val:.2f}
-        - 20일 이동평균: ${sma_20:.2f}
-        - 50일 이동평균: ${sma_50:.2f}
-        
         {news_summary}
         
-        다음 항목들을 반드시 한국어로 분석해주세요:
-        
-        1. 현재 기술적 상태 평가
-        - RSI, MACD, CCI, MFI 각 지표의 의미 설명
-        - 이동평균선과 현재가의 관계
-        
-        2. 단기 전망 (1주일)
-        - 예상 가격 범위
-        - 주요 지지선과 저항선
-        
-        3. 중기 전망 (1개월)
-        - 추세 전망
-        - 목표가 제시
-        
+        다음을 한국어로 상세히 분석해주세요:
+        1. 현재 기술적 상태
+        2. 단기(1주) 및 중기(1개월) 전망
+        3. 주요 매매 신호
         4. 리스크 요인
-        - 기술적 리스크
-        - {"뉴스에서 파악된 리스크" if news else "시장 리스크"}
+        5. 구체적인 투자 전략 (진입가, 손절가, 목표가)
         
-        5. 투자 전략
-        - 진입 시점
-        - 손절가와 목표가
-        - 포지션 크기 조절
-        
-        {"특히 밈코인의 경우 극심한 변동성과 투기적 성격을 강조하고, 투자금의 1-2%만 투자하도록 권고하세요." if asset_type == "암호화폐" and any(meme in symbol for meme in ['DOGE', 'SHIB', 'PEPE']) else ""}
-        
-        모든 설명은 한국 투자자가 이해하기 쉽게 한국어로 작성하고, 구체적인 숫자와 함께 실용적인 조언을 제공하세요.
+        모든 설명은 한국어로 작성하고 구체적인 숫자를 제시해주세요.
         """
         
         completion = groq_client.chat.completions.create(
@@ -591,7 +383,7 @@ def perform_ai_analysis(df, symbol, info, asset_type="주식"):
             messages=[
                 {
                     "role": "system",
-                    "content": "당신은 한국의 20년 경력 투자 전문가입니다. 기술적 분석, 리스크 관리, 포트폴리오 전략에 정통합니다. 모든 답변은 반드시 한국어로 작성하며, 한국 투자자들이 이해하기 쉽게 설명합니다. 전문 용어는 한국어로 번역하되, 필요시 영어를 병기합니다."
+                    "content": "당신은 한국의 전문 투자 분석가입니다. 모든 답변은 한국어로 작성합니다."
                 },
                 {
                     "role": "user",
@@ -602,399 +394,699 @@ def perform_ai_analysis(df, symbol, info, asset_type="주식"):
             max_tokens=2000
         )
         
-        # 뉴스 섹션 추가
-        result = f"## 🤖 AI 심층 분석 결과\n\n"
-        
-        # 뉴스가 있으면 먼저 표시
+        result = "## 🤖 AI 심층 분석 결과\n\n"
         if news:
             result += "### 📰 최신 뉴스\n"
             for i, article in enumerate(news[:3]):
                 title = article.get('title', 'N/A')
-                publisher = article.get('publisher', '')
                 link = article.get('link', '')
-                result += f"{i+1}. [{title}]({link}) - {publisher}\n"
+                if link:
+                    result += f"{i+1}. [{title}]({link})\n"
+                else:
+                    result += f"{i+1}. {title}\n"
             result += "\n---\n\n"
         
         result += completion.choices[0].message.content
-        
         return result
         
     except Exception as e:
-        st.error(f"AI 분석 중 오류 발생: {str(e)}")
-        if asset_type == "암호화폐":
-            return perform_crypto_analysis(df, symbol, get_crypto_metrics(symbol))
         return perform_technical_analysis(df, symbol)
 
 def perform_technical_analysis(df, symbol):
-    """기본 기술적 분석"""
-    if df.empty or 'RSI' not in df.columns:
-        return "데이터가 부족하여 분석을 수행할 수 없습니다."
+    if df.empty:
+        return "데이터가 부족합니다."
     
     latest = df.iloc[-1]
     
-    # 각 지표 분석
-    rsi_val = latest.get('RSI', 50)
-    rsi_signal = "과매수" if rsi_val > 70 else "과매도" if rsi_val < 30 else "중립"
-    
-    # MACD 분석 - NaN 체크 추가
-    macd_val = latest.get('MACD', 0)
-    macd_signal_val = latest.get('MACD_signal', 0)
-    if pd.isna(macd_val) or pd.isna(macd_signal_val):
-        macd_signal = "데이터 부족"
-    else:
-        macd_signal = "매수" if macd_val > macd_signal_val else "매도"
-    
-    cci_val = latest.get('CCI', 0)
-    cci_signal = "과매수" if cci_val > 100 else "과매도" if cci_val < -100 else "중립"
-    
-    mfi_val = latest.get('MFI', 50)
-    mfi_signal = "과매수" if mfi_val > 80 else "과매도" if mfi_val < 20 else "중립"
-    
     analysis = f"""
-## 📊 {symbol} 기술적 분석 결과
+## 📊 {symbol} 기술적 분석
 
-### 📈 현재 지표값
-- **RSI**: {rsi_val:.2f} - {rsi_signal} 상태
-- **MACD**: {macd_signal} 신호
-- **CCI**: {cci_val:.2f} - {cci_signal} 상태
-- **MFI**: {mfi_val:.2f} - {mfi_signal} 상태
+### 현재 지표
+- RSI: {latest.get('RSI', 0):.2f}
+- MACD: {latest.get('MACD', 0):.2f}
+- CCI: {latest.get('CCI', 0):.2f}
+- MFI: {latest.get('MFI', 0):.2f}
 
-### 💡 종합 의견
+### 종합 의견
 """
     
-    # 점수 계산
     score = 0
-    if 30 < rsi_val < 70: score += 1
-    if macd_signal == "매수": score += 1
-    if -100 < cci_val < 100: score += 1
-    if 20 < mfi_val < 80: score += 1
+    if 30 < latest.get('RSI', 50) < 70: score += 1
+    if latest.get('MACD', 0) > latest.get('MACD_signal', 0): score += 1
+    if -100 < latest.get('CCI', 0) < 100: score += 1
+    if 20 < latest.get('MFI', 50) < 80: score += 1
     
     if score >= 3:
-        analysis += "**긍정적** 📈 - 대부분의 지표가 긍정적인 신호를 보이고 있습니다."
+        analysis += "**긍정적** - 매수 고려"
     elif score >= 2:
-        analysis += "**중립적** ➡️ - 혼재된 신호를 보이고 있어 신중한 접근이 필요합니다."
+        analysis += "**중립적** - 관망"
     else:
-        analysis += "**부정적** 📉 - 대부분의 지표가 부정적인 신호를 보이고 있습니다."
+        analysis += "**부정적** - 매도 고려"
     
     return analysis
 
-# 메인 화면
-all_assets = st.session_state.stock_list + st.session_state.crypto_list + st.session_state.etf_list
+# 로그인 페이지
+if not st.session_state.authenticated:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("<div class='login-container'>", unsafe_allow_html=True)
+        st.title("🔐 로그인")
+        
+        with st.form("login_form"):
+            username = st.text_input("사용자명")
+            password = st.text_input("비밀번호", type="password")
+            col1, col2 = st.columns(2)
+            with col1:
+                login_button = st.form_submit_button("로그인", use_container_width=True)
+            with col2:
+                register_button = st.form_submit_button("회원가입", use_container_width=True)
+            
+            if login_button:
+                if login(username, password):
+                    st.success("로그인 성공!")
+                    st.rerun()
+                else:
+                    st.error("사용자명 또는 비밀번호가 틀렸습니다.")
+            
+            if register_button:
+                if username and password:
+                    if username not in st.session_state.user_data:
+                        st.session_state.user_data[username] = {
+                            "password": hash_password(password),
+                            "is_admin": False,
+                            "created_at": datetime.now().isoformat(),
+                            "portfolios": {"stocks": [], "crypto": [], "etf": []},
+                            "portfolio": {},
+                            "watchlist": [],
+                            "settings": {}
+                        }
+                        save_user_data(st.session_state.user_data)
+                        st.success("회원가입 완료! 로그인해주세요.")
+                    else:
+                        st.error("이미 존재하는 사용자명입니다.")
+                else:
+                    st.error("사용자명과 비밀번호를 입력해주세요.")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        # 기본 계정 안내
+        with st.expander("📌 테스트 계정"):
+            st.info("""
+            **관리자 계정**
+            - 사용자명: admin
+            - 비밀번호: admin123
+            
+            **일반 사용자**
+            - 회원가입 후 이용
+            """)
 
-if all_assets:
-    # 탭 생성
-    tab_titles = ["📊 전체 대시보드", "📈 주식", "🪙 암호화폐", "📦 ETF"] + [f"📌 {asset}" for asset in all_assets]
-    tabs = st.tabs(tab_titles)
+# 메인 앱 (로그인 후)
+else:
+    # 상단 헤더
+    col1, col2, col3 = st.columns([2, 6, 2])
+    with col1:
+        st.markdown(f"### 👤 {st.session_state.username}")
+        if st.session_state.is_admin:
+            st.caption("🔧 관리자")
+    with col2:
+        st.title("📈 AI 투자 분석 플랫폼 Pro")
+    with col3:
+        if st.button("🚪 로그아웃", use_container_width=True):
+            logout()
+            st.rerun()
     
-    # 전체 대시보드 탭
-    with tabs[0]:
-        st.header("📊 전체 포트폴리오 대시보드")
+    # 관리자 페이지
+    if st.session_state.is_admin:
+        with st.sidebar:
+            if st.button("👥 사용자 관리"):
+                st.session_state.show_admin = True
+    
+    if st.session_state.get('show_admin', False) and st.session_state.is_admin:
+        st.header("👥 사용자 관리")
         
-        # 자산 유형별 요약
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("주식", len(st.session_state.stock_list), f"{len(st.session_state.stock_list)} 종목")
-        with col2:
-            st.metric("암호화폐", len(st.session_state.crypto_list), f"{len(st.session_state.crypto_list)} 종목")
-        with col3:
-            st.metric("ETF", len(st.session_state.etf_list), f"{len(st.session_state.etf_list)} 종목")
+        # 사용자 목록
+        user_list = []
+        for username, data in st.session_state.user_data.items():
+            user_list.append({
+                "사용자명": username,
+                "관리자": "✅" if data.get("is_admin") else "❌",
+                "생성일": data.get("created_at", "N/A")[:10],
+                "마지막 로그인": data.get("last_login", "N/A")[:10] if "last_login" in data else "N/A"
+            })
         
-        # 전체 자산 미니 카드
-        st.subheader("📈 전체 자산 현황")
-        cols = st.columns(3)
-        for i, symbol in enumerate(all_assets):
-            with cols[i % 3]:
-                df, info = get_stock_data(symbol, "5d")
-                if not df.empty:
-                    current = df['Close'].iloc[-1]
-                    prev = df['Close'].iloc[-2] if len(df) > 1 else current
-                    change = ((current - prev) / prev) * 100 if prev != 0 else 0
+        df_users = pd.DataFrame(user_list)
+        st.dataframe(df_users, use_container_width=True)
+        
+        # 사용자 삭제
+        st.subheader("사용자 삭제")
+        users_to_delete = [u for u in st.session_state.user_data.keys() if u != ADMIN_USERNAME]
+        if users_to_delete:
+            user_to_delete = st.selectbox("삭제할 사용자", users_to_delete)
+            if st.button("🗑️ 사용자 삭제"):
+                del st.session_state.user_data[user_to_delete]
+                save_user_data(st.session_state.user_data)
+                st.success(f"{user_to_delete} 삭제됨")
+                st.rerun()
+        
+        if st.button("돌아가기"):
+            st.session_state.show_admin = False
+            st.rerun()
+    
+    # 메인 앱
+    else:
+        # 사이드바
+        with st.sidebar:
+            st.header("📊 포트폴리오 관리")
+            
+            # 자동 저장 알림
+            if st.button("💾 포트폴리오 저장"):
+                save_current_user_data()
+                st.success("저장 완료!")
+            
+            # 자산 추가
+            asset_type = st.selectbox("자산 유형", ["주식", "암호화폐", "ETF"])
+            
+            with st.form(f"add_{asset_type}_form"):
+                if asset_type == "주식":
+                    new_asset = st.text_input("주식 심볼", placeholder="예: AAPL")
+                elif asset_type == "암호화폐":
+                    new_asset = st.text_input("암호화폐 심볼", placeholder="예: BTC-USD")
+                else:
+                    new_asset = st.text_input("ETF 심볼", placeholder="예: SPY")
+                
+                add_button = st.form_submit_button("➕ 추가")
+                
+                if add_button and new_asset:
+                    symbol = new_asset.upper()
+                    if asset_type == "암호화폐" and not symbol.endswith("-USD"):
+                        symbol += "-USD"
                     
-                    # 자산 유형 아이콘
+                    target_list = (st.session_state.stock_list if asset_type == "주식" 
+                                  else st.session_state.crypto_list if asset_type == "암호화폐"
+                                  else st.session_state.etf_list)
+                    
+                    if symbol not in target_list:
+                        try:
+                            test_df = yf.Ticker(symbol).history(period="1d")
+                            if not test_df.empty:
+                                target_list.append(symbol)
+                                save_current_user_data()
+                                st.success(f"✅ {symbol} 추가됨!")
+                            else:
+                                st.error(f"❌ {symbol}를 찾을 수 없습니다.")
+                        except:
+                            st.error(f"❌ 유효하지 않은 심볼입니다.")
+                    else:
+                        st.warning("⚠️ 이미 있습니다.")
+            
+            # 트렌딩 암호화폐
+            if asset_type == "암호화폐":
+                st.markdown("---")
+                st.subheader("🔥 트렌딩")
+                for category, cryptos in TRENDING_CRYPTOS.items():
+                    with st.expander(category):
+                        for crypto in cryptos:
+                            if st.button(f"+ {crypto}", key=f"add_{crypto}"):
+                                if crypto not in st.session_state.crypto_list:
+                                    st.session_state.crypto_list.append(crypto)
+                                    save_current_user_data()
+                                    st.success(f"✅ {crypto} 추가됨!")
+            
+            st.markdown("---")
+            
+            # 포트폴리오 관리
+            st.subheader("💼 보유 자산")
+            all_assets = st.session_state.stock_list + st.session_state.crypto_list + st.session_state.etf_list
+            
+            if all_assets:
+                selected_asset = st.selectbox("자산 선택", all_assets)
+                col1, col2 = st.columns(2)
+                with col1:
+                    shares = st.number_input("수량", min_value=0.0, value=0.0, step=0.01)
+                with col2:
+                    buy_price = st.number_input("매수가", min_value=0.0, value=0.0, step=0.01)
+                
+                if st.button("💾 저장"):
+                    if shares > 0:
+                        st.session_state.portfolio[selected_asset] = {
+                            "shares": shares,
+                            "buy_price": buy_price
+                        }
+                        save_current_user_data()
+                        st.success(f"✅ {selected_asset} 저장됨!")
+                    elif selected_asset in st.session_state.portfolio:
+                        del st.session_state.portfolio[selected_asset]
+                        save_current_user_data()
+                        st.success(f"✅ {selected_asset} 제거됨!")
+            
+            # 자산 삭제
+            st.markdown("---")
+            if all_assets:
+                st.subheader("🗑️ 자산 삭제")
+                remove_asset = st.selectbox("삭제할 자산", all_assets)
+                if st.button("삭제"):
+                    if remove_asset in st.session_state.stock_list:
+                        st.session_state.stock_list.remove(remove_asset)
+                    elif remove_asset in st.session_state.crypto_list:
+                        st.session_state.crypto_list.remove(remove_asset)
+                    elif remove_asset in st.session_state.etf_list:
+                        st.session_state.etf_list.remove(remove_asset)
+                    
+                    if remove_asset in st.session_state.portfolio:
+                        del st.session_state.portfolio[remove_asset]
+                    
+                    save_current_user_data()
+                    st.success(f"✅ {remove_asset} 삭제됨!")
+                    st.rerun()
+        
+        # 메인 컨텐츠
+        all_assets = st.session_state.stock_list + st.session_state.crypto_list + st.session_state.etf_list
+        
+        if all_assets:
+            # 탭 생성
+            tab_titles = ["📊 대시보드", "💼 포트폴리오"] + [f"📌 {asset}" for asset in all_assets]
+            tabs = st.tabs(tab_titles)
+            
+            # 대시보드 탭
+            with tabs[0]:
+                st.header("📊 전체 대시보드")
+                
+                # 포트폴리오 요약
+                if st.session_state.portfolio:
+                    current_prices = {}
+                    for symbol in st.session_state.portfolio.keys():
+                        df, _ = get_stock_data(symbol, "1d")
+                        if not df.empty:
+                            current_prices[symbol] = df['Close'].iloc[-1]
+                    
+                    total_value, portfolio_details = calculate_portfolio_value(st.session_state.portfolio, current_prices)
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("총 포트폴리오", f"${total_value:,.2f}")
+                    with col2:
+                        total_cost = sum([d['Profit'] + d['Value'] - d['Profit'] for d in portfolio_details])
+                        total_profit = sum([d['Profit'] for d in portfolio_details])
+                        st.metric("총 수익", f"${total_profit:,.2f}", f"{(total_profit/total_cost*100):.2f}%")
+                    with col3:
+                        st.metric("보유 종목", len(st.session_state.portfolio))
+                    with col4:
+                        st.metric("평균 수익률", f"{np.mean([d['Profit %'] for d in portfolio_details]):.2f}%")
+                
+                # 자산별 현황
+                st.subheader("📈 자산 현황")
+                cols = st.columns(3)
+                for i, symbol in enumerate(all_assets):
+                    with cols[i % 3]:
+                        df, info = get_stock_data(symbol, "5d")
+                        if not df.empty:
+                            current = df['Close'].iloc[-1]
+                            prev = df['Close'].iloc[-2] if len(df) > 1 else current
+                            change = ((current - prev) / prev) * 100
+                            
+                            # 자산 타입 아이콘
+                            if symbol in st.session_state.crypto_list:
+                                icon = "🪙"
+                            elif symbol in st.session_state.etf_list:
+                                icon = "📦"
+                            else:
+                                icon = "📈"
+                            
+                            st.metric(
+                                label=f"{icon} {symbol}",
+                                value=f"${current:.2f}" if current > 10 else f"${current:.6f}",
+                                delta=f"{change:.2f}%"
+                            )
+                            
+                            # 미니 차트
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatter(
+                                x=df.index[-20:],
+                                y=df['Close'][-20:],
+                                mode='lines',
+                                line=dict(color='green' if change >= 0 else 'red', width=2),
+                                showlegend=False
+                            ))
+                            fig.update_layout(
+                                height=100,
+                                margin=dict(l=0, r=0, t=0, b=0),
+                                xaxis=dict(visible=False),
+                                yaxis=dict(visible=False),
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                plot_bgcolor='rgba(0,0,0,0)'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+            
+            # 포트폴리오 탭
+            with tabs[1]:
+                st.header("💼 포트폴리오 상세")
+                
+                if st.session_state.portfolio:
+                    # 포트폴리오 테이블
+                    portfolio_df = pd.DataFrame(portfolio_details)
+                    
+                    # 스타일 적용
+                    def highlight_profit(val):
+                        color = 'green' if val > 0 else 'red' if val < 0 else 'black'
+                        return f'color: {color}'
+                    
+                    styled_df = portfolio_df.style.applymap(highlight_profit, subset=['Profit', 'Profit %'])
+                    st.dataframe(styled_df, use_container_width=True)
+                    
+                    # 포트폴리오 차트
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # 파이 차트
+                        fig = go.Figure(data=[go.Pie(
+                            labels=portfolio_df['Symbol'],
+                            values=portfolio_df['Value'],
+                            hole=.3
+                        )])
+                        fig.update_layout(title="포트폴리오 구성", height=400)
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        # 수익률 바 차트
+                        fig = go.Figure(data=[
+                            go.Bar(
+                                x=portfolio_df['Symbol'],
+                                y=portfolio_df['Profit %'],
+                                marker_color=['green' if x > 0 else 'red' for x in portfolio_df['Profit %']]
+                            )
+                        ])
+                        fig.update_layout(title="종목별 수익률 (%)", height=400)
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("포트폴리오에 자산을 추가하세요.")
+            
+            # 개별 자산 탭들
+            for idx, symbol in enumerate(all_assets):
+                with tabs[idx + 2]:
+                    # 자산 타입 판별
                     if symbol in st.session_state.crypto_list:
+                        asset_type = "암호화폐"
                         icon = "🪙"
                     elif symbol in st.session_state.etf_list:
+                        asset_type = "ETF"
                         icon = "📦"
                     else:
+                        asset_type = "주식"
                         icon = "📈"
                     
-                    st.metric(
-                        label=f"{icon} {symbol}",
-                        value=f"${current:.2f}" if current > 10 else f"${current:.6f}",
-                        delta=f"{change:.2f}%"
-                    )
-    
-    # 주식 탭
-    with tabs[1]:
-        st.header("📈 주식 포트폴리오")
-        if st.session_state.stock_list:
-            for symbol in st.session_state.stock_list:
-                with st.expander(f"{symbol} 요약", expanded=True):
-                    df, info = get_stock_data(symbol, "1mo")
+                    # 헤더
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    with col1:
+                        st.header(f"{icon} {symbol} 상세 분석")
+                    with col2:
+                        period = st.selectbox(
+                            "기간",
+                            ["1d", "5d", "1mo", "3mo", "6mo", "1y"],
+                            index=2,
+                            key=f"period_{symbol}"
+                        )
+                    with col3:
+                        if st.button("🔄", key=f"refresh_{symbol}"):
+                            st.cache_data.clear()
+                            st.rerun()
+                    
+                    # 데이터 로드
+                    with st.spinner(f"{symbol} 로딩중..."):
+                        df, info = get_stock_data(symbol, period)
+                    
                     if not df.empty:
-                        col1, col2 = st.columns([2, 1])
-                        with col1:
-                            st.metric("현재가", f"${df['Close'].iloc[-1]:.2f}")
-                        with col2:
-                            if st.button(f"상세 분석 →", key=f"goto_{symbol}"):
-                                st.write(f"{symbol} 탭으로 이동하세요")
-        else:
-            st.info("주식을 추가하세요")
-    
-    # 암호화폐 탭
-    with tabs[2]:
-        st.header("🪙 암호화폐 포트폴리오")
-        if st.session_state.crypto_list:
-            # 온체인 데이터 요약
-            st.subheader("🔗 온체인 데이터 기반 분석")
-            for symbol in st.session_state.crypto_list:
-                with st.expander(f"{symbol} 온체인 분석", expanded=True):
-                    df, info = get_stock_data(symbol, "1mo")
-                    if not df.empty:
-                        metrics = get_crypto_metrics(symbol)
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("현재가", f"${df['Close'].iloc[-1]:.6f}")
-                        with col2:
-                            st.metric("24시간 거래량", f"${df['Volume'].iloc[-1]:,.0f}")
-                        with col3:
-                            week_change = ((df['Close'].iloc[-1] - df['Close'].iloc[-8]) / df['Close'].iloc[-8] * 100) if len(df) >= 8 else 0
-                            st.metric("7일 변화율", f"{week_change:.2f}%")
+                        # 지표 계산
+                        df = calculate_indicators(df)
                         
-                        # 밈코인 특별 표시
-                        if any(meme in symbol for meme in ['DOGE', 'SHIB', 'PEPE']):
-                            st.warning("⚠️ 밈코인 - 높은 변동성 주의!")
-        else:
-            st.info("암호화폐를 추가하세요")
-    
-    # ETF 탭
-    with tabs[3]:
-        st.header("📦 ETF 포트폴리오")
-        if st.session_state.etf_list:
-            for symbol in st.session_state.etf_list:
-                with st.expander(f"{symbol} 요약", expanded=True):
-                    df, info = get_stock_data(symbol, "1mo")
-                    if not df.empty:
-                        col1, col2 = st.columns([2, 1])
+                        # 기본 정보
+                        col1, col2, col3, col4 = st.columns(4)
                         with col1:
                             st.metric("현재가", f"${df['Close'].iloc[-1]:.2f}")
                         with col2:
-                            if st.button(f"상세 분석 →", key=f"goto_etf_{symbol}"):
-                                st.write(f"{symbol} 탭으로 이동하세요")
-        else:
-            st.info("ETF를 추가하세요")
-    
-    # 개별 자산 탭들
-    for idx, symbol in enumerate(all_assets):
-        with tabs[idx + 4]:
-            # 자산 유형 판별
-            if symbol in st.session_state.crypto_list:
-                asset_type = "암호화폐"
-                icon = "🪙"
-            elif symbol in st.session_state.etf_list:
-                asset_type = "ETF"
-                icon = "📦"
-            else:
-                asset_type = "주식"
-                icon = "📈"
-            
-            # 헤더
-            col1, col2, col3 = st.columns([3, 1, 1])
-            with col1:
-                st.header(f"{icon} {symbol} 상세 분석")
-            with col2:
-                period = st.selectbox(
-                    "기간",
-                    ["1d", "5d", "1mo", "3mo", "6mo", "1y"],
-                    index=2,
-                    key=f"period_{symbol}"
-                )
-            with col3:
-                if st.button("🔄 새로고침", key=f"refresh_{symbol}"):
-                    st.cache_data.clear()
-                    st.rerun()
-            
-            # 데이터 로드
-            with st.spinner(f"{symbol} 데이터 로딩 중..."):
-                df, info = get_stock_data(symbol, period)
-            
-            if not df.empty:
-                # 지표 계산
-                df = calculate_indicators(df)
-                
-                # 기본 정보
-                if asset_type == "암호화폐":
-                    metrics = get_crypto_metrics(symbol)
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("현재가", f"${df['Close'].iloc[-1]:.6f}")
-                    with col2:
-                        st.metric("24시간 거래량", f"${df['Volume'].iloc[-1]:,.0f}")
-                    with col3:
-                        st.metric("시가총액", f"${metrics.get('market_cap', 0):,.0f}")
-                    with col4:
-                        st.metric("52주 최고가", f"${metrics.get('ath', 0):.6f}")
-                else:
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("현재가", f"${df['Close'].iloc[-1]:.2f}")
-                    with col2:
-                        change = ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100)
-                        st.metric("변동률", f"{change:.2f}%")
-                    with col3:
-                        st.metric("거래량", f"{df['Volume'].iloc[-1]:,.0f}")
-                    with col4:
-                        if info.get('marketCap'):
-                            st.metric("시가총액", f"${info.get('marketCap', 0):,.0f}")
-                
-                # 차트
-                st.plotly_chart(create_enhanced_chart(df, symbol), use_container_width=True)
-                
-                # 최신 지표
-                st.subheader("📊 최신 기술적 지표")
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
-                
-                with col1:
-                    rsi_val = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
-                    st.metric(
-                        "RSI",
-                        f"{rsi_val:.2f}",
-                        delta="과매수" if rsi_val > 70 else "과매도" if rsi_val < 30 else "정상"
-                    )
-                
-                with col2:
-                    if 'MACD' in df.columns and not df['MACD'].isna().all():
-                        macd_val = df['MACD'].iloc[-1]
-                        macd_signal = df['MACD_signal'].iloc[-1]
-                        if not pd.isna(macd_val) and not pd.isna(macd_signal):
-                            macd_status = "매수" if macd_val > macd_signal else "매도"
-                            st.metric("MACD", f"{macd_val:.2f}", delta=macd_status)
-                        else:
-                            st.metric("MACD", "계산중", delta="데이터 대기")
-                    else:
-                        st.metric("MACD", "N/A", delta="데이터 부족")
-                
-                with col3:
-                    cci_val = df['CCI'].iloc[-1] if 'CCI' in df.columns else 0
-                    st.metric(
-                        "CCI",
-                        f"{cci_val:.2f}",
-                        delta="과매수" if cci_val > 100 else "과매도" if cci_val < -100 else "정상"
-                    )
-                
-                with col4:
-                    mfi_val = df['MFI'].iloc[-1] if 'MFI' in df.columns else 50
-                    st.metric(
-                        "MFI",
-                        f"{mfi_val:.2f}",
-                        delta="과매수" if mfi_val > 80 else "과매도" if mfi_val < 20 else "정상"
-                    )
-                
-                with col5:
-                    if 'Stoch_K' in df.columns:
-                        stoch_val = df['Stoch_K'].iloc[-1]
-                        st.metric(
-                            "Stoch %K",
-                            f"{stoch_val:.2f}",
-                            delta="과매수" if stoch_val > 80 else "과매도" if stoch_val < 20 else "정상"
-                        )
-                
-                with col6:
-                    if 'ATR' in df.columns:
-                        atr_val = df['ATR'].iloc[-1]
-                        atr_pct = (atr_val / df['Close'].iloc[-1]) * 100
-                        st.metric(
-                            "ATR",
-                            f"{atr_val:.2f}",
-                            delta=f"{atr_pct:.1f}% 변동성"
-                        )
-                
-                # 뉴스 섹션 추가
-                if asset_type != "암호화폐" or not any(x in symbol for x in ['-USD', 'USD']):
-                    st.subheader("📰 최신 뉴스")
-                    news = get_stock_news(symbol)
-                    if news:
-                        for article in news[:3]:
-                            with st.expander(f"📄 {article.get('title', 'N/A')[:60]}..."):
-                                col1, col2 = st.columns([3, 1])
-                                with col1:
-                                    st.write(article.get('title', 'N/A'))
-                                    if article.get('link'):
-                                        st.markdown(f"[📖 전체 기사 읽기]({article.get('link')})")
-                                with col2:
-                                    if article.get('publisher'):
-                                        st.caption(f"📰 {article.get('publisher')}")
-                                    if article.get('providerPublishTime'):
-                                        try:
-                                            pub_time = datetime.fromtimestamp(article.get('providerPublishTime'))
-                                            st.caption(f"🕐 {pub_time.strftime('%m/%d %H:%M')}")
-                                        except:
-                                            pass
-                    else:
-                        st.info("📰 최신 뉴스가 없습니다.")
-                
-                # 분석 버튼
-                st.markdown("---")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("📊 기술적 분석", key=f"tech_{symbol}"):
-                        with st.spinner("분석 중..."):
-                            if asset_type == "암호화폐":
-                                analysis = perform_crypto_analysis(df, symbol, get_crypto_metrics(symbol))
+                            change = ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100)
+                            st.metric("변동률", f"{change:.2f}%")
+                        with col3:
+                            st.metric("거래량", f"{df['Volume'].iloc[-1]:,.0f}")
+                        with col4:
+                            if symbol in st.session_state.portfolio:
+                                shares = st.session_state.portfolio[symbol]['shares']
+                                value = shares * df['Close'].iloc[-1]
+                                st.metric("보유 가치", f"${value:,.2f}")
+                        
+                        # 차트
+                        st.plotly_chart(create_chart(df, symbol), use_container_width=True)
+                        
+                        # 기술적 지표
+                        st.subheader("📊 기술적 지표")
+                        col1, col2, col3, col4, col5, col6 = st.columns(6)
+                        
+                        with col1:
+                            rsi_val = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
+                            st.metric("RSI", f"{rsi_val:.2f}", 
+                                     delta="과매수" if rsi_val > 70 else "과매도" if rsi_val < 30 else "정상")
+                        
+                        with col2:
+                            if 'MACD' in df.columns and not df['MACD'].isna().all():
+                                macd_val = df['MACD'].iloc[-1]
+                                macd_signal = df['MACD_signal'].iloc[-1]
+                                if not pd.isna(macd_val) and not pd.isna(macd_signal):
+                                    macd_status = "매수" if macd_val > macd_signal else "매도"
+                                    st.metric("MACD", f"{macd_val:.2f}", delta=macd_status)
+                                else:
+                                    st.metric("MACD", "계산중", delta="대기")
                             else:
-                                analysis = perform_technical_analysis(df, symbol)
-                            st.session_state.analysis_results[f"{symbol}_tech"] = analysis
-                
-                with col2:
-                    if st.button("🤖 AI 심층 분석", key=f"ai_{symbol}"):
-                        with st.spinner("AI 분석 중..."):
-                            analysis = perform_ai_analysis(df, symbol, info, asset_type)
-                            st.session_state.analysis_results[f"{symbol}_ai"] = analysis
-                
-                with col3:
-                    if st.button("🔄 분석 초기화", key=f"clear_{symbol}"):
-                        keys_to_remove = [k for k in st.session_state.analysis_results.keys() if k.startswith(symbol)]
-                        for key in keys_to_remove:
-                            del st.session_state.analysis_results[key]
-                        st.success("분석 결과가 초기화되었습니다.")
-                
-                # 분석 결과 표시
-                if f"{symbol}_tech" in st.session_state.analysis_results:
-                    with st.expander("📊 기술적 분석 결과", expanded=True):
-                        st.markdown(st.session_state.analysis_results[f"{symbol}_tech"])
-                
-                if f"{symbol}_ai" in st.session_state.analysis_results:
-                    with st.expander("🤖 AI 분석 결과", expanded=True):
-                        st.markdown(st.session_state.analysis_results[f"{symbol}_ai"])
+                                st.metric("MACD", "N/A", delta="부족")
+                        
+                        with col3:
+                            cci_val = df['CCI'].iloc[-1] if 'CCI' in df.columns else 0
+                            st.metric("CCI", f"{cci_val:.2f}",
+                                     delta="과매수" if cci_val > 100 else "과매도" if cci_val < -100 else "정상")
+                        
+                        with col4:
+                            mfi_val = df['MFI'].iloc[-1] if 'MFI' in df.columns else 50
+                            st.metric("MFI", f"{mfi_val:.2f}",
+                                     delta="과매수" if mfi_val > 80 else "과매도" if mfi_val < 20 else "정상")
+                        
+                        with col5:
+                            if 'Stoch_K' in df.columns:
+                                stoch_val = df['Stoch_K'].iloc[-1]
+                                st.metric("Stoch %K", f"{stoch_val:.2f}",
+                                         delta="과매수" if stoch_val > 80 else "과매도" if stoch_val < 20 else "정상")
+                        
+                        with col6:
+                            if 'ATR' in df.columns:
+                                atr_val = df['ATR'].iloc[-1]
+                                atr_pct = (atr_val / df['Close'].iloc[-1]) * 100
+                                st.metric("ATR", f"{atr_val:.2f}", delta=f"{atr_pct:.1f}% 변동성")
+                        
+                        # 뉴스 섹션
+                        st.subheader("📰 최신 뉴스")
+                        news = get_stock_news(symbol)
+                        if news:
+                            for article in news[:3]:
+                                with st.expander(f"📄 {article.get('title', 'N/A')[:60]}..."):
+                                    col1, col2 = st.columns([3, 1])
+                                    with col1:
+                                        st.write(article.get('title', 'N/A'))
+                                        if article.get('link'):
+                                            st.markdown(f"[📖 전체 기사]({article.get('link')})")
+                                    with col2:
+                                        if article.get('publisher'):
+                                            st.caption(f"📰 {article.get('publisher')}")
+                        else:
+                            st.info("최신 뉴스가 없습니다.")
+                        
+                        # 예측 섹션
+                        st.subheader("📈 가격 예측")
+                        predictions = predict_price(df, days=7)
+                        if predictions is not None:
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                # 예측 차트
+                                pred_fig = go.Figure()
+                                
+                                # 실제 가격
+                                pred_fig.add_trace(go.Scatter(
+                                    x=df.index[-30:],
+                                    y=df['Close'][-30:],
+                                    mode='lines',
+                                    name='실제 가격',
+                                    line=dict(color='blue', width=2)
+                                ))
+                                
+                                # 예측 가격
+                                future_dates = pd.date_range(start=df.index[-1] + timedelta(days=1), periods=7)
+                                pred_fig.add_trace(go.Scatter(
+                                    x=future_dates,
+                                    y=predictions,
+                                    mode='lines+markers',
+                                    name='예측 가격',
+                                    line=dict(color='red', width=2, dash='dash')
+                                ))
+                                
+                                pred_fig.update_layout(
+                                    title="7일 가격 예측",
+                                    height=400
+                                )
+                                st.plotly_chart(pred_fig, use_container_width=True)
+                            
+                            with col2:
+                                st.metric("현재가", f"${df['Close'].iloc[-1]:.2f}")
+                                st.metric("7일 후 예측", f"${predictions[-1]:.2f}")
+                                change_pct = ((predictions[-1] - df['Close'].iloc[-1]) / df['Close'].iloc[-1]) * 100
+                                st.metric("예상 변동률", f"{change_pct:+.2f}%")
+                        
+                        # 분석 버튼
+                        st.markdown("---")
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            if st.button("📊 기술적 분석", key=f"tech_{symbol}"):
+                                with st.spinner("분석중..."):
+                                    analysis = perform_technical_analysis(df, symbol)
+                                    st.session_state.analysis_results[f"{symbol}_tech"] = analysis
+                        
+                        with col2:
+                            if st.button("🤖 AI 분석", key=f"ai_{symbol}"):
+                                with st.spinner("AI 분석중..."):
+                                    analysis = perform_ai_analysis(df, symbol, info, asset_type)
+                                    st.session_state.analysis_results[f"{symbol}_ai"] = analysis
+                        
+                        with col3:
+                            if st.button("📄 PDF 리포트", key=f"pdf_{symbol}"):
+                                pdf_buffer = generate_pdf_report(df, symbol, info)
+                                st.download_button(
+                                    label="📥 다운로드",
+                                    data=pdf_buffer,
+                                    file_name=f"{symbol}_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                    mime="application/pdf"
+                                )
+                        
+                        with col4:
+                            if st.button("🔄 초기화", key=f"clear_{symbol}"):
+                                keys = [k for k in st.session_state.analysis_results.keys() if k.startswith(symbol)]
+                                for key in keys:
+                                    del st.session_state.analysis_results[key]
+                                st.success("초기화됨")
+                        
+                        # 분석 결과
+                        if f"{symbol}_tech" in st.session_state.analysis_results:
+                            with st.expander("📊 기술적 분석 결과", expanded=True):
+                                st.markdown(st.session_state.analysis_results[f"{symbol}_tech"])
+                        
+                        if f"{symbol}_ai" in st.session_state.analysis_results:
+                            with st.expander("🤖 AI 분석 결과", expanded=True):
+                                st.markdown(st.session_state.analysis_results[f"{symbol}_ai"])
+                    else:
+                        st.error(f"❌ {symbol} 데이터를 불러올 수 없습니다.")
+        
+        else:
+            # 자산이 없을 때
+            st.info("👈 사이드바에서 주식, 암호화폐, ETF를 추가하세요!")
             
-            else:
-                st.error(f"❌ {symbol} 데이터를 불러올 수 없습니다.")
-else:
-    # 자산이 없을 때
-    st.info("👈 왼쪽 사이드바에서 주식, 암호화폐, ETF를 추가해주세요!")
-    
-    # 빠른 시작 가이드
-    with st.expander("🚀 빠른 시작 가이드", expanded=True):
-        st.markdown("""
-        ### 📈 주식 추천
-        - **테크 주식**: AAPL, GOOGL, MSFT, NVDA
-        - **한국 주식**: 005930.KS (삼성전자), 000660.KS (SK하이닉스)
-        
-        ### 🪙 암호화폐 추천
-        - **주요 코인**: BTC-USD, ETH-USD
-        - **인기 밈코인**: DOGE-USD, SHIB-USD, PEPE-USD
-        - **AI 코인**: FET-USD, RNDR-USD
-        
-        ### 📦 ETF 추천
-        - **미국 주요**: SPY, QQQ, DIA
-        - **섹터 ETF**: XLK (기술), XLF (금융)
-        """)
+            with st.expander("🚀 빠른 시작"):
+                st.markdown("""
+                ### 📈 인기 주식
+                - 미국: AAPL, GOOGL, MSFT, NVDA, TSLA
+                - 한국: 005930.KS, 000660.KS
+                
+                ### 🪙 인기 암호화폐
+                - 주요: BTC-USD, ETH-USD
+                - 밈코인: DOGE-USD, SHIB-USD
+                
+                ### 📦 인기 ETF
+                - SPY, QQQ, ARKK
+                """)
 
-# 푸터
+# 하단 정보
 st.markdown("---")
-col1, col2, col3 = st.columns(3)
-with col2:
-    st.markdown("### 💡 AI 투자 분석 플랫폼")
-    st.caption("주식, 암호화폐, ETF 종합 분석")
-    st.caption(f"마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+st.caption(f"AI 투자 분석 플랫폼 Pro | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+# 보조 함수들
+def calculate_portfolio_value(portfolio, current_prices):
+    total_value = 0
+    portfolio_details = []
+    
+    for symbol, data in portfolio.items():
+        if symbol in current_prices:
+            shares = data.get('shares', 0)
+            buy_price = data.get('buy_price', current_prices[symbol])
+            current_price = current_prices[symbol]
+            value = shares * current_price
+            cost = shares * buy_price
+            profit = value - cost
+            profit_pct = (profit / cost * 100) if cost > 0 else 0
+            
+            total_value += value
+            portfolio_details.append({
+                'Symbol': symbol,
+                'Shares': shares,
+                'Buy Price': buy_price,
+                'Current Price': current_price,
+                'Value': value,
+                'Profit': profit,
+                'Profit %': profit_pct
+            })
+    
+    return total_value, portfolio_details
+
+def predict_price(df, days=7):
+    if len(df) < 50:
+        return None
+    
+    try:
+        prices = df['Close'].values
+        x = np.arange(len(prices))
+        z = np.polyfit(x, prices, 1)
+        linear_pred = np.poly1d(z)(np.arange(len(prices), len(prices) + days))
+        
+        # 변동성 추가
+        volatility = df['Close'].pct_change().std()
+        predictions = []
+        for i in range(days):
+            pred = linear_pred[i] * (1 + np.random.normal(0, volatility/2))
+            predictions.append(max(pred, df['Close'].min() * 0.5))
+        
+        return np.array(predictions)
+    except:
+        return None
+
+def generate_pdf_report(df, symbol, info):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    
+    # 제목
+    story.append(Paragraph(f"{symbol} 투자 분석 리포트", styles['Title']))
+    story.append(Spacer(1, 12))
+    
+    # 생성 정보
+    story.append(Paragraph(f"생성일: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Normal']))
+    story.append(Paragraph(f"분석자: {st.session_state.username}", styles['Normal']))
+    story.append(Spacer(1, 20))
+    
+    # 현재 가격
+    current_price = df['Close'].iloc[-1]
+    prev_close = df['Close'].iloc[-2] if len(df) > 1 else current_price
+    change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0
+    
+    price_data = [
+        ["현재가", f"${current_price:.2f}"],
+        ["전일 종가", f"${prev_close:.2f}"],
+        ["변동률", f"{change_pct:+.2f}%"],
+        ["거래량", f"{df['Volume'].iloc[-1]:,.0f}"]
+    ]
+    
+    price_table = Table(price_data, colWidths=[100, 200])
+    price_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.lightblue),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    story.append(price_table)
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+            #
