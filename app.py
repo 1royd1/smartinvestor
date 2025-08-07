@@ -1,4 +1,164 @@
-import streamlit as st
+# 함수들
+@st.cache_data(ttl=300)
+def get_stock_data(symbol, period="1mo"):
+    try:
+        stock = yf.Ticker(symbol)
+        df = stock.history(period=period)
+        info = stock.info
+        return df, info
+    except:
+        return pd.DataFrame(), {}
+
+@st.cache_data(ttl=600)
+def get_stock_news(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        news = ticker.news
+        return news[:5] if news else []
+    except:
+        return []
+
+def calculate_indicators(df):
+    if df.empty or len(df) < 20:
+        return df
+    
+    try:
+        # RSI
+        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+        
+        # MACD
+        if len(df) >= 26:
+            macd_indicator = ta.trend.MACD(df['Close'], window_slow=26, window_fast=12, window_sign=9)
+            df['MACD'] = macd_indicator.macd()
+            df['MACD_signal'] = macd_indicator.macd_signal()
+            df['MACD_diff'] = macd_indicator.macd_diff()
+            
+            # fillna method 대신 bfill() 사용
+            df['MACD'] = df['MACD'].bfill()
+            df['MACD_signal'] = df['MACD_signal'].bfill()
+            df['MACD_diff'] = df['MACD_diff'].fillna(0)
+        else:
+            df['MACD'] = 0
+            df['MACD_signal'] = 0
+            df['MACD_diff'] = 0
+        
+        # 기타 지표들
+        df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close']).cci()
+        df['MFI'] = ta.volume.MFIIndicator(df['High'], df['Low'], df['Close'], df['Volume']).money_flow_index()
+        
+        # 볼린저 밴드
+        bollinger = ta.volatility.BollingerBands(df['Close'])
+        df['BB_upper'] = bollinger.bollinger_hband()
+        df['BB_middle'] = bollinger.bollinger_mavg()
+        df['BB_lower'] = bollinger.bollinger_lband()
+        
+        # 이동평균
+        df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
+        df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50) if len(df) >= 50 else None
+        df['SMA_200'] = ta.trend.sma_indicator(df['Close'], window=200) if len(df) >= 200 else None
+        
+        # Stochastic
+        stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'])
+        df['Stoch_K'] = stoch.stoch()
+        df['Stoch_D'] = stoch.stoch_signal()
+        
+        # ATR
+        df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
+        
+        return df
+    except Exception as e:
+        st.error(f"지표 계산 오류: {str(e)}")
+        return df
+
+def predict_price(df, days=7):
+    """가격 예측 함수"""
+    if df is None or df.empty or len(df) < 50:
+        return None
+    
+    try:
+        prices = df['Close'].values
+        x = np.arange(len(prices))
+        z = np.polyfit(x, prices, 1)
+        linear_pred = np.poly1d(z)(np.arange(len(prices), len(prices) + days))
+        
+        # 변동성 추가
+        volatility = df['Close'].pct_change().std()
+        predictions = []
+        for i in range(days):
+            pred = linear_pred[i] * (1 + np.random.normal(0, volatility/2))
+            predictions.append(max(pred, df['Close'].min() * 0.5))
+        
+        return np.array(predictions)
+    except Exception as e:
+        return None
+
+def calculate_portfolio_value(portfolio, current_prices):
+    """포트폴리오 가치 계산"""
+    total_value = 0
+    portfolio_details = []
+    
+    for symbol, data in portfolio.items():
+        if symbol in current_prices:
+            shares = data.get('shares', 0)
+            buy_price = data.get('buy_price', current_prices[symbol])
+            current_price = current_prices[symbol]
+            value = shares * current_price
+            cost = shares * buy_price
+            profit = value - cost
+            profit_pct = (profit / cost * 100) if cost > 0 else 0
+            
+            total_value += value
+            portfolio_details.append({
+                'Symbol': symbol,
+                'Shares': shares,
+                'Buy Price': buy_price,
+                'Current Price': current_price,
+                'Value': value,
+                'Profit': profit,
+                'Profit %': profit_pct
+            })
+    
+    return total_value, portfolio_details
+
+def generate_pdf_report(df, symbol, info):
+    """PDF 리포트 생성"""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    
+    # 제목
+    story.append(Paragraph(f"{symbol} 투자 분석 리포트", styles['Title']))
+    story.append(Spacer(1, 12))
+    
+    # 생성 정보
+    story.append(Paragraph(f"생성일: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Normal']))
+    story.append(Paragraph(f"분석자: {st.session_state.get('username', 'Guest')}", styles['Normal']))
+    story.append(Spacer(1, 20))
+    
+    # 현재 가격
+    current_price = df['Close'].iloc[-1]
+    prev_close = df['Close'].iloc[-2] if len(df) > 1 else current_price
+    change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0
+    
+    price_data = [
+        ["현재가", f"${current_price:.2f}"],
+        ["전일 종가", f"${prev_close:.2f}"],
+        ["변동률", f"{change_pct:+.2f}%"],
+        ["거래량", f"{df['Volume'].iloc[-1]:,.0f}"]
+    ]
+    
+    price_table = Table(price_data, colWidths=[100, 200])
+    price_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.lightblue),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    story.append(price_table)
+    
+    doc.build(story)
+    buffer.seek(0)
+    return bufferimport streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
@@ -1048,7 +1208,7 @@ def predict_price(df, days=7):
             predictions.append(max(pred, df['Close'].min() * 0.5))
         
         return np.array(predictions)
-    except:
+    except Exception as e:
         return None
 
 def generate_pdf_report(df, symbol, info):
