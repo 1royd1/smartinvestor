@@ -6,3 +6,6 @@ ta
 reportlab
 groq
 numpy
+feedparser
+beautifulsoup4
+scipy
